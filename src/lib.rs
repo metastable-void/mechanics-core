@@ -6,6 +6,7 @@ use boa_gc::Finalize;
 use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
 use parking_lot::RwLock;
+use reqwest::header::{HeaderMap, HeaderName};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::task;
@@ -19,16 +20,16 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
 #[derive(JsData, Trace, Finalize)]
 pub struct HttpEndpoint {
     url: String,
-    bearer_token: String,
+    headers: HashMap<String, String>,
 }
 
 impl HttpEndpoint {
     pub const USER_AGENT: &str = concat!("Mozilla/5.0 (compatible; mechanics/", env!("CARGO_PKG_VERSION"), ")");
 
-    pub fn new(url: &str, bearer_token: &str) -> Self {
+    pub fn new(url: &str, headers: HashMap<String, String>) -> Self {
         Self {
             url: url.to_owned(),
-            bearer_token: bearer_token.to_owned(),
+            headers,
         }
     }
 
@@ -36,7 +37,18 @@ impl HttpEndpoint {
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
         let client = reqwest::Client::builder().build().map_err(into_io_error)?;
-        let res = client.post(url).bearer_auth(&self.bearer_token).body(json).header("User-Agent", Self::USER_AGENT)
+        let mut headers = HeaderMap::new();
+        for (k, v) in &self.headers {
+            match (k.try_into() as Result<HeaderName, _>, v.try_into()) {
+                (Ok(k), Ok(v)) => {
+                    headers.insert(k, v);
+                },
+
+                _ => {},
+            }
+        }
+        headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
+        let res = client.post(url).headers(headers).body(json)
             .send().await.map_err(into_io_error)?;
         let res: Res = res.json().await.map_err(into_io_error)?;
         Ok(res)
@@ -75,7 +87,7 @@ impl Queue {
             }
         }
     }
-    
+
     fn drain_jobs(&self, context: &mut Context) {
         // Run the timeout jobs first.
         self.drain_timeout_jobs(context);
