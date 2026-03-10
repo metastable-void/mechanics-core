@@ -241,7 +241,7 @@ impl Runtime {
 
         let module = Module::synthetic(&[
             js_string!("default"),
-        ], SyntheticModuleInitializer::from_copy_closure_with_captures(|module, ept, ctx| {
+        ], SyntheticModuleInitializer::from_copy_closure_with_captures(|module, ept, _ctx| {
             module.set_export(&js_string!("default"), ept.clone().into())
         }, endpoint), None, None, &mut context);
         
