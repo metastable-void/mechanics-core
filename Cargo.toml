@@ -3,6 +3,13 @@ name = "mechanics-core"
 version = "0.1.0"
 edition = "2024"
 
+authors = ["metastable-void"]
+description = "mechanics automation framework (core)"
+license = "Apache-2.0 OR MPL-2.0"
+readme = "README.md"
+repository = "https://github.com/metastable-void/mechanics-core"
+homepage = "https://github.com/metastable-void/mechanics-core"
+
 [dependencies]
 boa_engine = "0.21.0"
 boa_gc = "0.21.0"
