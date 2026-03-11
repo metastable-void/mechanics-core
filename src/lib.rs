@@ -7,7 +7,7 @@ use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
 use parking_lot::RwLock;
 use reqwest::header::{HeaderMap, HeaderName};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use tokio::task;
 use std::{collections::{BTreeMap, HashMap, VecDeque}, cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
@@ -17,7 +17,7 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
     std::io::Error::other(e)
 }
 
-#[derive(JsData, Trace, Finalize)]
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize)]
 pub struct HttpEndpoint {
     url: String,
     headers: HashMap<String, String>,
@@ -164,7 +164,7 @@ impl JobExecutor for Queue {
     }
 }
 
-#[derive(JsData, Trace, Finalize)]
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize)]
 pub struct RuntimeState {
     endpoints: HashMap<String, HttpEndpoint>,
 }
@@ -264,7 +264,7 @@ impl Runtime {
         }
     }
 
-    pub fn run_source<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> JsResult<JsValue> {
+    pub(crate) fn run_source_inner<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> JsResult<JsValue> {
         let arg = serde_json::to_value(arg)
             .map_err(JsError::from_rust)?;
         let source = source.as_ref();
@@ -288,6 +288,22 @@ impl Runtime {
             PromiseState::Fulfilled(v) => Ok(v),
             PromiseState::Pending => Ok(res.into()),
             PromiseState::Rejected(e) => Err(JsError::from_opaque(e)),
+        }
+    }
+
+    pub fn run_source<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> Result<Value, String> {
+        match self.run_source_inner(source, arg) {
+            Ok(data) => {
+                let mut ctx = self.ctx.lock().unwrap();
+                match data.to_json(&mut ctx) {
+                    Ok(d) => Ok(d.unwrap_or(Value::Null)),
+                    _ => Ok(Value::Null),
+                }
+            },
+
+            Err(e) => {
+                Err(e.to_string())
+            },
         }
     }
 }
