@@ -17,7 +17,7 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
     std::io::Error::other(e)
 }
 
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize)]
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone)]
 pub struct HttpEndpoint {
     url: String,
     headers: HashMap<String, String>,
@@ -126,7 +126,7 @@ impl JobExecutor for Queue {
     // While the sync flavor of `run_jobs` will block the current thread until all the jobs have finished...
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
+            .enable_all()
             .build()
             .unwrap();
 
@@ -164,7 +164,7 @@ impl JobExecutor for Queue {
     }
 }
 
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize)]
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone)]
 pub struct RuntimeState {
     endpoints: HashMap<String, HttpEndpoint>,
 }
@@ -232,9 +232,10 @@ impl Runtime {
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("JSON error")))?;
                 
                 let ctx_ref = ctx.borrow();
-                let state = ctx_ref.get_data::<RuntimeState>()
+                let state = ctx_ref.get_data::<RuntimeState>().cloned()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Invalid state")))?;
                 
+                drop(ctx_ref);
                 let endpoint_name = endpoint.to_std_string_lossy();
                 let endpoint = state.endpoints.get(&endpoint_name)
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")))?;
@@ -242,7 +243,6 @@ impl Runtime {
                 let res: Value = endpoint.post(&req_body).await
                     .map_err(|e| JsError::from_rust(e))?;
 
-                drop(ctx_ref);
                 let res = JsValue::from_json(&res, &mut ctx.borrow_mut())?;
                 Ok(res)
             }),

@@ -14,6 +14,8 @@ fn main() -> std::io::Result<()> {
     let js_source = std::fs::read_to_string(js_path)?;
     let config: RuntimeState = serde_json::from_str(&config_json).map_err(|e| std::io::Error::other(e))?;
     let runtime = Runtime::new(config);
-    runtime.run_source(&js_source, serde_json::Value::Null).map_err(std::io::Error::other)?;
+    let value = runtime.run_source(&js_source, serde_json::Value::Null).map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
+    println!("{}", &json);
     Ok(())
 }
