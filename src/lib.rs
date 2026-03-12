@@ -34,6 +34,7 @@ impl HttpEndpoint {
     }
 
     pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(&self, req_data: &Req) -> std::io::Result<Res> {
+        // Serialize once here so callers can pass any serde-compatible request type.
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
         let client = reqwest::Client::builder().build().map_err(into_io_error)?;
@@ -48,6 +49,7 @@ impl HttpEndpoint {
             }
         }
         headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
+        // `body(json)` sends raw bytes; set JSON content type explicitly for strict servers.
         headers.insert("Content-Type", "application/json".try_into().unwrap());
         let res = client.post(url).headers(headers).body(json)
             .send().await.map_err(into_io_error)?;
@@ -77,6 +79,7 @@ impl Queue {
         let now = context.clock().now();
 
         let mut timeouts_borrow = self.timeout_jobs.write();
+        // `split_off(now)` keeps future jobs in the map and returns due jobs to run now.
         let mut jobs_to_keep = timeouts_borrow.split_off(&now);
         jobs_to_keep.retain(|_, job| !job.is_cancelled());
         let jobs_to_run = std::mem::replace(timeouts_borrow.deref_mut(), jobs_to_keep);
@@ -158,7 +161,8 @@ impl JobExecutor for Queue {
                 eprintln!("Uncaught {err}");
             };
 
-            // Only one macrotask can be executed before the next drain of the microtask queue.
+            // Only one macrotask can be executed before the next microtask drain.
+            // Keep mutable `context` borrows scoped to this call site.
             self.drain_jobs(&mut context.borrow_mut());
             task::yield_now().await
         }
@@ -229,6 +233,7 @@ impl Runtime {
             NativeFunction::from_async_fn(async |_, args, ctx| {
                 let endpoint = args.get_or_undefined(0).as_string()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("endpoint is not a string")))?;
+                // Convert JS value to serde JSON once before the network call.
                 let req_body = args.get_or_undefined(1).to_json(&mut ctx.borrow_mut())?
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("JSON error")))?;
                 
@@ -236,6 +241,8 @@ impl Runtime {
                 let state = ctx_ref.get_data::<RuntimeState>().cloned()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Invalid state")))?;
                 
+                // Do not hold a RefCell borrow across `.await`, otherwise the job loop
+                // can panic when it tries to borrow the same context mutably.
                 drop(ctx_ref);
                 let endpoint_name = endpoint.to_std_string_lossy();
                 let endpoint = state.endpoints.get(&endpoint_name)
