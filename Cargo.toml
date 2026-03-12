@@ -25,3 +25,4 @@ tokio = { version = "1", features = ["full"] }
 opt-level = 3
 lto = true
 strip = true
+codegen-units = 1
