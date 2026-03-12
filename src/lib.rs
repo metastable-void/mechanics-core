@@ -13,11 +13,12 @@ use tokio::task;
 use std::{collections::{BTreeMap, HashMap, VecDeque}, cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
 use std::ops::DerefMut;
 
-// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
+/// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
 pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
     std::io::Error::other(e)
 }
 
+/// HTTP endpoint configuration used by the runtime-provided JS helper.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone)]
 pub struct HttpEndpoint {
     url: String,
@@ -27,7 +28,7 @@ pub struct HttpEndpoint {
 impl HttpEndpoint {
     pub const USER_AGENT: &str = concat!("Mozilla/5.0 (compatible; mechanics/", env!("CARGO_PKG_VERSION"), ")");
 
-    // Constructs an endpoint definition used by runtime-owned HTTP helpers.
+    /// Constructs an endpoint definition used by runtime-owned HTTP helpers.
     pub fn new(url: &str, headers: HashMap<String, String>) -> Self {
         Self {
             url: url.to_owned(),
@@ -35,9 +36,8 @@ impl HttpEndpoint {
         }
     }
 
-    // Sends a JSON POST request and deserializes the JSON response into `Res`.
+    /// Sends a JSON POST request and deserializes the JSON response into `Res`.
     pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(&self, req_data: &Req) -> std::io::Result<Res> {
-        // Serialize once here so callers can pass any serde-compatible request type.
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
         let client = reqwest::Client::builder().build().map_err(into_io_error)?;
@@ -52,7 +52,6 @@ impl HttpEndpoint {
             }
         }
         headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
-        // `body(json)` sends raw bytes; set JSON content type explicitly for strict servers.
         headers.insert("Content-Type", "application/json".try_into().unwrap());
         let res = client.post(url).headers(headers).body(json)
             .send().await.map_err(into_io_error)?;
@@ -61,6 +60,7 @@ impl HttpEndpoint {
     }
 }
 
+/// Job queues backing Boa's executor integration.
 pub(crate) struct Queue {
     async_jobs: Arc<RwLock<VecDeque<NativeAsyncJob>>>,
     promise_jobs: Arc<RwLock<VecDeque<PromiseJob>>>,
@@ -69,7 +69,7 @@ pub(crate) struct Queue {
 }
 
 impl Queue {
-    // Creates an empty job queue backing Boa's executor hooks.
+    /// Creates an empty job queue backing Boa's executor hooks.
     pub(crate) fn new() -> Self {
         Self {
             async_jobs: Arc::new(RwLock::default()),
@@ -79,12 +79,11 @@ impl Queue {
         }
     }
 
-    // Executes all due timeout jobs and keeps only future/cancel-surviving entries.
+    /// Executes all due timeout jobs and keeps only future/cancel-surviving entries.
     fn drain_timeout_jobs(&self, context: &mut Context) {
         let now = context.clock().now();
 
         let mut timeouts_borrow = self.timeout_jobs.write();
-        // `split_off(now)` keeps future jobs in the map and returns due jobs to run now.
         let mut jobs_to_keep = timeouts_borrow.split_off(&now);
         jobs_to_keep.retain(|_, job| !job.is_cancelled());
         let jobs_to_run = std::mem::replace(timeouts_borrow.deref_mut(), jobs_to_keep);
@@ -97,9 +96,8 @@ impl Queue {
         }
     }
 
-    // Drains one macrotask turn in Boa order: timeout, one generic task, then promise jobs.
+    /// Drains one macrotask turn in Boa order: timeout, one generic task, then promise jobs.
     fn drain_jobs(&self, context: &mut Context) {
-        // Run the timeout jobs first.
         self.drain_timeout_jobs(context);
 
         let job = self.generic_jobs.write().pop_front();
@@ -120,7 +118,7 @@ impl Queue {
 }
 
 impl JobExecutor for Queue {
-    // Routes jobs to their corresponding internal queues.
+    /// Routes jobs to their corresponding internal queues.
     fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
         match job {
             Job::PromiseJob(job) => self.promise_jobs.write().push_back(job),
@@ -134,7 +132,7 @@ impl JobExecutor for Queue {
         }
     }
 
-    // Bridges Boa's synchronous API to the async scheduler by running a local Tokio runtime.
+    /// Bridges Boa's synchronous API to the async scheduler by running a local Tokio runtime.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -144,7 +142,7 @@ impl JobExecutor for Queue {
         task::LocalSet::default().block_on(&runtime, self.run_jobs_async(&RefCell::new(context)))
     }
 
-    // Core executor loop that polls async jobs and drains micro/macro task queues until idle.
+    /// Polls async jobs and drains task queues until no jobs remain.
     async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
         let mut group = FutureGroup::new();
         loop {
@@ -157,32 +155,27 @@ impl JobExecutor for Queue {
                 && self.timeout_jobs.read().is_empty()
                 && self.generic_jobs.read().is_empty()
             {
-                // All queues are empty. We can exit.
                 return Ok(());
             }
 
-            // We have some jobs pending on the microtask queue. Try to poll the pending
-            // tasks once to see if any of them finished, and run the pending microtasks
-            // otherwise.
             if let Some(Err(err)) = future::poll_once(group.next()).await.flatten() {
                 eprintln!("Uncaught {err}");
             };
 
-            // Only one macrotask can be executed before the next microtask drain.
-            // Keep mutable `context` borrows scoped to this call site.
             self.drain_jobs(&mut context.borrow_mut());
             task::yield_now().await
         }
     }
 }
 
+/// Serializable runtime data injected into the JS context.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone)]
 pub struct RuntimeState {
     endpoints: HashMap<String, HttpEndpoint>,
 }
 
 impl RuntimeState {
-    // Stores endpoint configuration that JS helpers can read from `Context` data.
+    /// Builds runtime state from endpoint definitions.
     pub fn new(endpoints: HashMap<String, HttpEndpoint>) -> Self {
         Self {
             endpoints,
@@ -190,27 +183,28 @@ impl RuntimeState {
     }
 }
 
+/// In-memory module loader for synthetic runtime modules.
 pub(crate) struct CustomModuleLoader {
     defined: RefCell<HashMap<JsString, Module>>,
 }
 
 impl CustomModuleLoader {
-    // Creates an in-memory module registry keyed by module specifier.
+    /// Creates an empty in-memory module registry.
     pub(crate) fn new() -> Self {
         Self {
             defined: RefCell::new(HashMap::new()),
         }
     }
 
-    // Registers a synthetic module under a specifier for later import resolution.
+    /// Registers a synthetic module under a specifier for later import resolution.
     pub(crate) fn define_module(&self, spec: JsString, module: Module) {
        self.defined.borrow_mut().insert(spec, module);
     }
 }
 
 impl ModuleLoader for CustomModuleLoader {
-     // Resolves imports from the in-memory registry used by the runtime.
-     fn load_imported_module(
+    /// Resolves imports from the in-memory module registry.
+    fn load_imported_module(
             self: Rc<Self>,
             _referrer: boa_engine::module::Referrer,
             specifier: JsString,
@@ -223,12 +217,13 @@ impl ModuleLoader for CustomModuleLoader {
     }
 }
 
+/// Script runtime that hosts a Boa context and exposes helper modules.
 pub struct Runtime {
     ctx: Arc<Mutex<Context>>,
 }
 
 impl Runtime {
-    // Builds a Boa context, injects runtime state, and exposes the `mechanics:endpoint` module.
+    /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
     pub fn new(state: RuntimeState) -> Self {
         let queue = Queue::new();
 
@@ -245,7 +240,6 @@ impl Runtime {
             NativeFunction::from_async_fn(async |_, args, ctx| {
                 let endpoint = args.get_or_undefined(0).as_string()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("endpoint is not a string")))?;
-                // Convert JS value to serde JSON once before the network call.
                 let req_body = args.get_or_undefined(1).to_json(&mut ctx.borrow_mut())?
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("JSON error")))?;
                 
@@ -253,8 +247,6 @@ impl Runtime {
                 let state = ctx_ref.get_data::<RuntimeState>().cloned()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Invalid state")))?;
                 
-                // Do not hold a RefCell borrow across `.await`, otherwise the job loop
-                // can panic when it tries to borrow the same context mutably.
                 drop(ctx_ref);
                 let endpoint_name = endpoint.to_std_string_lossy();
                 let endpoint = state.endpoints.get(&endpoint_name)
@@ -284,7 +276,7 @@ impl Runtime {
         }
     }
 
-    // Parses/evaluates module source, invokes default export with `arg`, and returns raw JS output.
+    /// Parses and evaluates a module, invokes its default export, and returns the JS result.
     pub(crate) fn run_source_inner<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> JsResult<JsValue> {
         let arg = serde_json::to_value(arg)
             .map_err(JsError::from_rust)?;
@@ -312,7 +304,7 @@ impl Runtime {
         }
     }
 
-    // Public entry point that runs a script and converts the resulting JS value into JSON.
+    /// Runs source and converts the resulting JS value into `serde_json::Value`.
     pub fn run_source<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> Result<Value, String> {
         match self.run_source_inner(source, arg) {
             Ok(data) => {
