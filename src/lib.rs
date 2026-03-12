@@ -13,6 +13,7 @@ use tokio::task;
 use std::{collections::{BTreeMap, HashMap, VecDeque}, cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
 use std::ops::DerefMut;
 
+// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
 pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
     std::io::Error::other(e)
 }
@@ -26,6 +27,7 @@ pub struct HttpEndpoint {
 impl HttpEndpoint {
     pub const USER_AGENT: &str = concat!("Mozilla/5.0 (compatible; mechanics/", env!("CARGO_PKG_VERSION"), ")");
 
+    // Constructs an endpoint definition used by runtime-owned HTTP helpers.
     pub fn new(url: &str, headers: HashMap<String, String>) -> Self {
         Self {
             url: url.to_owned(),
@@ -33,6 +35,7 @@ impl HttpEndpoint {
         }
     }
 
+    // Sends a JSON POST request and deserializes the JSON response into `Res`.
     pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(&self, req_data: &Req) -> std::io::Result<Res> {
         // Serialize once here so callers can pass any serde-compatible request type.
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
@@ -66,6 +69,7 @@ pub(crate) struct Queue {
 }
 
 impl Queue {
+    // Creates an empty job queue backing Boa's executor hooks.
     pub(crate) fn new() -> Self {
         Self {
             async_jobs: Arc::new(RwLock::default()),
@@ -75,6 +79,7 @@ impl Queue {
         }
     }
 
+    // Executes all due timeout jobs and keeps only future/cancel-surviving entries.
     fn drain_timeout_jobs(&self, context: &mut Context) {
         let now = context.clock().now();
 
@@ -92,6 +97,7 @@ impl Queue {
         }
     }
 
+    // Drains one macrotask turn in Boa order: timeout, one generic task, then promise jobs.
     fn drain_jobs(&self, context: &mut Context) {
         // Run the timeout jobs first.
         self.drain_timeout_jobs(context);
@@ -114,6 +120,7 @@ impl Queue {
 }
 
 impl JobExecutor for Queue {
+    // Routes jobs to their corresponding internal queues.
     fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
         match job {
             Job::PromiseJob(job) => self.promise_jobs.write().push_back(job),
@@ -127,7 +134,7 @@ impl JobExecutor for Queue {
         }
     }
 
-    // While the sync flavor of `run_jobs` will block the current thread until all the jobs have finished...
+    // Bridges Boa's synchronous API to the async scheduler by running a local Tokio runtime.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -137,7 +144,7 @@ impl JobExecutor for Queue {
         task::LocalSet::default().block_on(&runtime, self.run_jobs_async(&RefCell::new(context)))
     }
 
-    // ...the async flavor won't, which allows concurrent execution with external async tasks.
+    // Core executor loop that polls async jobs and drains micro/macro task queues until idle.
     async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
         let mut group = FutureGroup::new();
         loop {
@@ -175,6 +182,7 @@ pub struct RuntimeState {
 }
 
 impl RuntimeState {
+    // Stores endpoint configuration that JS helpers can read from `Context` data.
     pub fn new(endpoints: HashMap<String, HttpEndpoint>) -> Self {
         Self {
             endpoints,
@@ -187,18 +195,21 @@ pub(crate) struct CustomModuleLoader {
 }
 
 impl CustomModuleLoader {
+    // Creates an in-memory module registry keyed by module specifier.
     pub(crate) fn new() -> Self {
         Self {
             defined: RefCell::new(HashMap::new()),
         }
     }
 
+    // Registers a synthetic module under a specifier for later import resolution.
     pub(crate) fn define_module(&self, spec: JsString, module: Module) {
        self.defined.borrow_mut().insert(spec, module);
     }
 }
 
 impl ModuleLoader for CustomModuleLoader {
+     // Resolves imports from the in-memory registry used by the runtime.
      fn load_imported_module(
             self: Rc<Self>,
             _referrer: boa_engine::module::Referrer,
@@ -217,6 +228,7 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    // Builds a Boa context, injects runtime state, and exposes the `mechanics:endpoint` module.
     pub fn new(state: RuntimeState) -> Self {
         let queue = Queue::new();
 
@@ -272,6 +284,7 @@ impl Runtime {
         }
     }
 
+    // Parses/evaluates module source, invokes default export with `arg`, and returns raw JS output.
     pub(crate) fn run_source_inner<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> JsResult<JsValue> {
         let arg = serde_json::to_value(arg)
             .map_err(JsError::from_rust)?;
@@ -299,6 +312,7 @@ impl Runtime {
         }
     }
 
+    // Public entry point that runs a script and converts the resulting JS value into JSON.
     pub fn run_source<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> Result<Value, String> {
         match self.run_source_inner(source, arg) {
             Ok(data) => {
