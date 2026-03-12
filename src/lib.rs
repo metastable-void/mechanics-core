@@ -48,7 +48,7 @@ impl HttpEndpoint {
             }
         }
         headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
-        headers.insert("Content-Tyoe", "application/json".try_into().unwrap());
+        headers.insert("Content-Type", "application/json".try_into().unwrap());
         let res = client.post(url).headers(headers).body(json)
             .send().await.map_err(into_io_error)?;
         let res: Res = res.json().await.map_err(into_io_error)?;
