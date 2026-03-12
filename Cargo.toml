@@ -21,7 +21,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tokio = { version = "1", features = ["full"] }
 
-[profiles.release]
+[profile.release]
 opt-level = 3
 lto = true
 strip = true
