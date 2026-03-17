@@ -8,7 +8,7 @@ use boa_engine::{
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, Module, NativeFunction,
     Source, Trace,
     builtins::promise::PromiseState,
-    context::ContextBuilder,
+    context::{ContextBuilder, time::JsInstant},
     js_string,
     module::SyntheticModuleInitializer,
     object::{FunctionObjectBuilder, builtins::JsPromise},
@@ -61,6 +61,27 @@ pub(crate) struct RuntimeInternal {
 }
 
 impl RuntimeInternal {
+    fn compute_deadline(
+        context: &Context,
+        max_execution_time: std::time::Duration,
+    ) -> JsResult<JsInstant> {
+        let now_ms = u128::from(context.clock().now().millis_since_epoch());
+        let timeout_ms = max_execution_time.as_millis();
+        let deadline_ms = now_ms.checked_add(timeout_ms).ok_or(JsError::from_native(
+            JsNativeError::range().with_message("Configured max_execution_time is too large"),
+        ))?;
+        if deadline_ms > u128::from(u64::MAX) {
+            return Err(JsError::from_native(
+                JsNativeError::range().with_message("Configured max_execution_time is too large"),
+            ));
+        }
+        let deadline_ms = deadline_ms as u64;
+        Ok(JsInstant::new(
+            deadline_ms / 1000,
+            ((deadline_ms % 1000) * 1_000_000) as u32,
+        ))
+    }
+
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
     pub(crate) fn new_with_client(reqwest_client: reqwest::Client) -> Self {
         let queue = Rc::new(Queue::new());
@@ -161,6 +182,7 @@ impl RuntimeInternal {
             self.default_endpoint_timeout_ms,
         );
 
+        let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)?;
         let source = source.as_ref();
         let ctx = &mut self.ctx;
 
@@ -169,7 +191,6 @@ impl RuntimeInternal {
         runtime_limits.set_recursion_limit(self.execution_limits.max_recursion_depth);
         runtime_limits.set_stack_size_limit(self.execution_limits.max_stack_size);
 
-        let deadline = ctx.clock().now() + self.execution_limits.max_execution_time.into();
         self.queue.set_deadline(Some(deadline));
         ctx.insert_data(state);
 

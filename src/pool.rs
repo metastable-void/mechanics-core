@@ -133,11 +133,17 @@ impl MechanicsPoolShared {
 
         let rx = shared.rx.clone();
         let exit_tx = shared.exit_tx.clone();
+        let (start_tx, start_rx) = bounded::<()>(0);
         let reqwest_client = shared.reqwest_client.clone();
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
 
         let handle = thread::spawn(move || {
+            if start_rx.recv().is_err() {
+                let _ = exit_tx.send(WorkerExit { worker_id });
+                return;
+            }
+
             let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut runtime = RuntimeInternal::new_with_client(reqwest_client);
                 runtime.set_execution_limits(execution_limits);
@@ -186,6 +192,7 @@ impl MechanicsPoolShared {
 
         let mut workers = shared.workers.lock().expect("workers mutex poisoned");
         workers.insert(worker_id, handle);
+        let _ = start_tx.send(());
         shared.restart_blocked.store(false, Ordering::Release);
         worker_id
     }
@@ -770,6 +777,35 @@ mod tests {
                         || msg.contains("serialize")
                         || msg.contains("convert")
                 );
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn oversized_execution_timeout_is_reported_as_execution_error() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::MAX,
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            export default function main(_arg) {
+                return 1;
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("oversized max_execution_time must not panic worker");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("max_execution_time") || msg.contains("too large"));
             }
             other => panic!("unexpected error kind: {other}"),
         }
