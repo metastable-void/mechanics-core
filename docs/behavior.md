@@ -36,6 +36,7 @@ At runtime:
 - If return value is not a Promise, it is wrapped in a resolved Promise.
 - Job queue drains once after invocation.
 - Final value is converted to `serde_json::Value`.
+- Unhandled async job errors (including unhandled Promise rejections) are treated as fatal for the current job.
 
 If JSON conversion fails, execution fails with `MechanicsError::Execution`.
 

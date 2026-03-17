@@ -808,6 +808,34 @@ mod tests {
     }
 
     #[test]
+    fn unhandled_async_error_is_reported_as_execution_error() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            export default function main(_arg) {
+                Promise.resolve().then(() => {
+                    throw new Error("boom");
+                });
+                return 1;
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("unhandled async error should fail current job");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("boom") || msg.contains("Error") || msg.contains("Unhandled"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
     fn oversized_execution_timeout_is_reported_as_execution_error() {
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,

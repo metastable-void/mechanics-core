@@ -7,15 +7,51 @@ use crate::{
 use boa_engine::{
     Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, Module, NativeFunction,
     Source, Trace,
-    builtins::promise::PromiseState,
-    context::{ContextBuilder, time::JsInstant},
+    builtins::promise::{OperationType, PromiseState},
+    context::{ContextBuilder, HostHooks, time::JsInstant},
     js_string,
     module::SyntheticModuleInitializer,
-    object::{FunctionObjectBuilder, builtins::JsPromise},
+    object::{FunctionObjectBuilder, JsObject, builtins::JsPromise},
 };
 use boa_gc::Finalize;
 use serde_json::Value;
-use std::{rc::Rc, sync::Arc};
+use std::{cell::Cell, rc::Rc, sync::Arc};
+
+#[derive(Default, Debug)]
+struct RuntimeHostHooks {
+    pending_unhandled_rejections: Cell<usize>,
+}
+
+impl RuntimeHostHooks {
+    fn clear(&self) {
+        self.pending_unhandled_rejections.set(0);
+    }
+
+    fn has_unhandled_rejections(&self) -> bool {
+        self.pending_unhandled_rejections.get() > 0
+    }
+}
+
+impl HostHooks for RuntimeHostHooks {
+    fn promise_rejection_tracker(
+        &self,
+        _promise: &JsObject,
+        operation: OperationType,
+        _context: &mut Context,
+    ) {
+        let pending = self.pending_unhandled_rejections.get();
+        match operation {
+            OperationType::Reject => {
+                self.pending_unhandled_rejections
+                    .set(pending.saturating_add(1));
+            }
+            OperationType::Handle => {
+                self.pending_unhandled_rejections
+                    .set(pending.saturating_sub(1));
+            }
+        }
+    }
+}
 
 #[derive(JsData, Finalize, Trace, Clone, Debug)]
 pub(crate) struct MechanicsState {
@@ -56,6 +92,7 @@ pub(crate) struct RuntimeInternal {
     ctx: Context,
     reqwest_client: reqwest::Client,
     queue: Rc<Queue>,
+    hooks: Rc<RuntimeHostHooks>,
     execution_limits: MechanicsExecutionLimits,
     default_endpoint_timeout_ms: Option<u64>,
 }
@@ -85,11 +122,13 @@ impl RuntimeInternal {
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
     pub(crate) fn new_with_client(reqwest_client: reqwest::Client) -> Self {
         let queue = Rc::new(Queue::new());
+        let hooks = Rc::new(RuntimeHostHooks::default());
 
         let loader = Rc::new(CustomModuleLoader::new());
         let mut context = ContextBuilder::new()
             .job_executor(queue.clone())
             .module_loader(loader.clone())
+            .host_hooks(hooks.clone())
             .build()
             .unwrap();
 
@@ -158,6 +197,7 @@ impl RuntimeInternal {
             ctx: context,
             reqwest_client,
             queue,
+            hooks,
             execution_limits: MechanicsExecutionLimits::default(),
             default_endpoint_timeout_ms: None,
         }
@@ -176,6 +216,7 @@ impl RuntimeInternal {
         let arg = job.arg;
         let config = job.config;
         let source = job.mod_source;
+        self.hooks.clear();
         let state = MechanicsState::new(
             config,
             self.reqwest_client.clone(),
@@ -199,6 +240,11 @@ impl RuntimeInternal {
             let module = Module::parse(source, None, ctx)?;
             let _ = module.load_link_evaluate(ctx);
             ctx.run_jobs()?;
+            if self.hooks.has_unhandled_rejections() {
+                return Err(JsError::from_native(
+                    JsNativeError::error().with_message("Unhandled promise rejection"),
+                ));
+            }
 
             let arg = JsValue::from_json(&arg, ctx)?;
             let main = module.get_value(js_string!("default"), ctx)?;
@@ -209,6 +255,11 @@ impl RuntimeInternal {
             let res = res.as_promise().unwrap_or(JsPromise::resolve(res, ctx));
 
             ctx.run_jobs()?;
+            if self.hooks.has_unhandled_rejections() {
+                return Err(JsError::from_native(
+                    JsNativeError::error().with_message("Unhandled promise rejection"),
+                ));
+            }
 
             match res.state() {
                 PromiseState::Fulfilled(v) => Ok(v),
@@ -222,6 +273,7 @@ impl RuntimeInternal {
 
         ctx.remove_data::<MechanicsState>();
         self.queue.set_deadline(None);
+        self.hooks.clear();
         result
     }
 

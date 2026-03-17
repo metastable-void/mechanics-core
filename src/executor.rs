@@ -74,7 +74,7 @@ impl Queue {
     }
 
     /// Executes all due timeout jobs and keeps only future/cancel-surviving entries.
-    fn drain_timeout_jobs(&self, context: &mut Context) {
+    fn drain_timeout_jobs(&self, context: &mut Context) -> JsResult<()> {
         let now = context.clock().now();
 
         let jobs_to_run = {
@@ -97,30 +97,26 @@ impl Queue {
         };
 
         for job in jobs_to_run {
-            if let Err(e) = job.call(context) {
-                eprintln!("Uncaught {e}");
-            }
+            job.call(context)?;
         }
+        Ok(())
     }
 
     /// Drains one macrotask turn in Boa order: timeout, one generic task, then promise jobs.
-    fn drain_jobs(&self, context: &mut Context) {
-        self.drain_timeout_jobs(context);
+    fn drain_jobs(&self, context: &mut Context) -> JsResult<()> {
+        self.drain_timeout_jobs(context)?;
 
         let job = self.generic_jobs.borrow_mut().pop_front();
-        if let Some(generic) = job
-            && let Err(err) = generic.call(context)
-        {
-            eprintln!("Uncaught {err}");
+        if let Some(generic) = job {
+            generic.call(context)?;
         }
 
         let jobs = std::mem::take(&mut *self.promise_jobs.borrow_mut());
         for job in jobs {
-            if let Err(e) = job.call(context) {
-                eprintln!("Uncaught {e}");
-            }
+            job.call(context)?;
         }
         context.clear_kept_objects();
+        Ok(())
     }
 }
 
@@ -220,8 +216,8 @@ impl JobExecutor for Queue {
                 };
 
                 if let Some(Err(err)) = polled.flatten() {
-                    eprintln!("Uncaught {err}");
-                };
+                    return Err(err);
+                }
             }
 
             {
@@ -229,7 +225,7 @@ impl JobExecutor for Queue {
                 self.check_deadline(&ctx_ref)?;
             }
 
-            self.drain_jobs(&mut context.borrow_mut());
+            self.drain_jobs(&mut context.borrow_mut())?;
             task::yield_now().await
         }
     }
@@ -304,7 +300,9 @@ mod tests {
         );
 
         queue.timeout_jobs.borrow_mut().insert(at, vec![job1, job2]);
-        queue.drain_timeout_jobs(&mut context);
+        queue
+            .drain_timeout_jobs(&mut context)
+            .expect("timeout jobs should run without error");
         assert_eq!(counter.get(), 11);
     }
 }

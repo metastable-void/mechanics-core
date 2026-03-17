@@ -12,10 +12,10 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 
 ## Medium
 
-2. Unhandled async errors can be logged but not surfaced as job failure.
-- Location: `src/executor.rs:99-103`, `src/executor.rs:117-123`, `src/executor.rs:222-224`
-- Why: job errors in queue draining paths are printed with `eprintln!` and not propagated.
-- Impact: caller may receive successful result while background rejection/error happened.
+2. [DONE] Unhandled async errors can be logged but not surfaced as job failure.
+- Fixed in: `src/executor.rs` (job errors now propagate through `run_jobs`), `src/pool.rs` (regression test).
+- Previous location: `src/executor.rs:99-103`, `src/executor.rs:117-123`, `src/executor.rs:222-224`
+- Previous issue: errors in queue draining paths were printed with `eprintln!` and execution could still appear successful.
 
 3. [DONE] `try_run` name/expectation mismatch.
 - Fixed in: `src/pool.rs` (`try_run` renamed to `run_try_enqueue`).
