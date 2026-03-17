@@ -8,7 +8,7 @@ Audit pass covered:
 
 Validation run:
 - `cargo clippy --all-targets --all-features` (pass).
-- `cargo test --all-targets` (pass: 46 passed, 0 failed, 19 ignored).
+- `cargo test --all-targets` (pass: 48 passed, 0 failed, 19 ignored).
 - `cargo test --all-targets -- --ignored` (pass: 19 passed, 0 failed; run outside sandbox restrictions).
 
 ## Current findings
@@ -35,14 +35,16 @@ Validation run:
 
 ### 3) Endpoint configuration validation is fail-late (first call), not fail-fast
 - Severity: low
-- Status: open
-- Evidence:
-- URL template/spec consistency checks happen during each execute path in `build_url`: [`src/http.rs:290`](/home/menhera/projects/mechanics-core/src/http.rs:290).
-- `MechanicsConfig::new` currently just stores config with no upfront validation: [`src/http.rs:783`](/home/menhera/projects/mechanics-core/src/http.rs:783).
-- Impact:
-- Invalid endpoint configs are discovered only when invoked at runtime, not at configuration load time.
-- Suggested fix:
-- Add explicit config validator (or validate in `MechanicsConfig::new`) and optionally cache parsed URL templates/specs.
+- Status: done (2026-03-18)
+- Resolution:
+- Added endpoint static validator (`HttpEndpoint::validate_config`) covering URL template/spec consistency and query/default bounds checks.
+- `MechanicsConfig::new(...)` is now fallible and validates all endpoints before returning.
+- `MechanicsConfig` deserialization is now validation-backed (invalid configs fail during deserialization).
+- Validation is intentionally non-caching and does not introduce cross-job state.
+- Verification:
+- New tests in [`src/http/tests/serde_config.rs`](/home/menhera/projects/mechanics-core/src/http/tests/serde_config.rs):
+- `mechanics_config_new_rejects_invalid_endpoint_configuration`
+- `mechanics_config_deserialize_rejects_invalid_endpoint_configuration`
 
 ## Historical tracked items (resolved)
 - `1` Pending Promise result handling: done.

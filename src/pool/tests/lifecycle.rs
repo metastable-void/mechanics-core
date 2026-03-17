@@ -80,7 +80,7 @@ fn run_and_run_try_enqueue_fail_when_pool_closed() {
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
     let err = pool
@@ -101,7 +101,7 @@ fn run_and_run_try_enqueue_fail_when_workers_unavailable_and_restart_blocked() {
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
     let err = pool
@@ -122,7 +122,7 @@ fn drop_cancels_queued_jobs() {
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
     pool.shared

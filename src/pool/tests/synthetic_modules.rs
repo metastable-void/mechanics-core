@@ -16,7 +16,11 @@ fn form_urlencoded_module_roundtrip() {
                 return { encoded, decoded };
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     assert_eq!(value["decoded"]["hello"], json!("world test"));
     assert_eq!(value["decoded"]["x"], json!("1+2"));
@@ -38,7 +42,11 @@ fn form_urlencoded_module_encode_is_key_ordered() {
                 return encode({ z: "last", a: "first", m: "middle" });
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     let encoded = value.as_str().expect("encoded should be string");
     assert_eq!(encoded, "a=first&m=middle&z=last");
@@ -61,7 +69,11 @@ fn base64_module_roundtrip_base64url() {
                 return { encoded, bytes: Array.from(decoded) };
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     assert_eq!(value["bytes"], json!([1, 2, 3, 250, 255]));
     assert!(
@@ -89,7 +101,11 @@ fn hex_module_roundtrip() {
                 return { encoded, bytes: Array.from(decoded) };
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     assert_eq!(value["encoded"], json!("000f10ff"));
     assert_eq!(value["bytes"], json!([0, 15, 16, 255]));
@@ -112,7 +128,11 @@ fn base32_module_roundtrip_base32hex() {
                 return { encoded, bytes: Array.from(decoded) };
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     assert_eq!(value["bytes"], json!([104, 101, 108, 108, 111]));
     assert!(
@@ -142,7 +162,11 @@ fn rand_module_fills_buffer() {
                 return { anyNonZero, len: arr.length };
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     assert_eq!(value["len"], json!(32));
     assert_eq!(value["anyNonZero"], json!(true));
@@ -174,7 +198,11 @@ fn rand_module_fills_arraybuffer_and_dataview() {
                 };
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let value = pool.run(job).expect("run module");
     assert_eq!(value["abLen"], json!(32));
     assert_eq!(value["dvLen"], json!(32));
@@ -196,7 +224,11 @@ fn base64_decode_rejects_invalid_input() {
                 return decode("%%%");
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("invalid base64 input should fail decode");
@@ -220,7 +252,11 @@ fn hex_decode_rejects_invalid_input() {
                 return decode("zz");
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("invalid hex input should fail decode");
@@ -244,7 +280,11 @@ fn base32_decode_rejects_invalid_input() {
                 return decode("***", "base32");
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("invalid base32 input should fail decode");

@@ -19,9 +19,12 @@ The crate API is exported from `src/lib.rs`:
 - module source (`mod_source`),
 - JSON argument (`arg`),
 - endpoint config (`config`).
-3. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
-4. The module default export is invoked with one argument.
-5. Result is converted to JSON and returned.
+3. `MechanicsConfig` validation is fail-fast:
+- `MechanicsConfig::new(...)` validates endpoint configuration before returning.
+- `serde` deserialization into `MechanicsConfig` also validates and fails on invalid endpoint config.
+4. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
+5. The module default export is invoked with one argument.
+6. Result is converted to JSON and returned.
 
 ## JavaScript contract
 Your module should export a callable default export.
@@ -105,6 +108,11 @@ Config shape is JSON-friendly and snake_case (`serde`):
 
 Byte-length validation:
 - `min_bytes` / `max_bytes` for URL/query slots are validated against raw UTF-8 byte length.
+
+Configuration validation:
+- Endpoint config is validated when building/deserializing `MechanicsConfig`.
+- Invalid configs fail fast (for example: malformed URL template, missing/extra `url_param_specs`, invalid slot/query rules, invalid bounds/defaults).
+- No cross-job cache is introduced by this validation; each supplied config object is validated independently.
 
 Minimal endpoint config example (JSON):
 
@@ -281,7 +289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         HttpEndpoint::new(HttpMethod::Post, "https://httpbin.org/post", HashMap::new()),
     );
 
-    let config = MechanicsConfig::new(endpoints);
+    let config = MechanicsConfig::new(endpoints)?;
     let pool = MechanicsPool::new(MechanicsPoolConfig::default())?;
 
     let job = MechanicsJob {

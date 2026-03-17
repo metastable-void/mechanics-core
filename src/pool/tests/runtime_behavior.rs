@@ -15,7 +15,7 @@ fn run_simple_module_returns_value() {
         "#;
     let job = make_job(
         source,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         json!({"n": 7}),
     );
     let value = pool.run(job).expect("run module");
@@ -42,7 +42,11 @@ fn loop_iteration_limit_stops_infinite_loop() {
                 while (true) {}
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool.run(job).expect_err("must hit loop iteration limit");
     match err {
         MechanicsError::Execution(msg) => {
@@ -65,7 +69,11 @@ fn json_conversion_error_is_reported_as_execution_error() {
                 return 1n;
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("BigInt result should fail JSON conversion");
@@ -95,7 +103,11 @@ fn pending_default_promise_is_reported_as_execution_error() {
                 return new Promise(() => {});
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("pending promise should not be treated as success");
@@ -123,7 +135,11 @@ fn unhandled_async_error_is_reported_as_execution_error() {
                 return 1;
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("unhandled async error should fail current job");
@@ -152,7 +168,11 @@ fn oversized_execution_timeout_is_reported_as_execution_error() {
                 return 1;
             }
         "#;
-    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
     let err = pool
         .run(job)
         .expect_err("oversized max_execution_time must not panic worker");

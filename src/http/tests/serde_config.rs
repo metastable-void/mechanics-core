@@ -19,3 +19,41 @@ fn endpoint_deserializes_from_snake_case_body_types() {
         .expect("deserialized endpoint should build URL");
     assert_eq!(url.as_str(), "https://example.com/1");
 }
+
+#[test]
+fn mechanics_config_new_rejects_invalid_endpoint_configuration() {
+    let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
+        .with_url_param_specs(HashMap::from([(
+            "other".to_owned(),
+            UrlParamSpec::default(),
+        )]));
+
+    let mut endpoints = HashMap::new();
+    endpoints.insert("bad".to_owned(), endpoint);
+
+    let err = MechanicsConfig::new(endpoints).expect_err("config should fail fast");
+    assert!(matches!(err, crate::MechanicsError::RuntimePool(_)));
+    assert!(
+        err.msg()
+            .contains("missing url_param_specs entry for slot `id`")
+    );
+}
+
+#[test]
+fn mechanics_config_deserialize_rejects_invalid_endpoint_configuration() {
+    let err = serde_json::from_value::<MechanicsConfig>(json!({
+        "endpoints": {
+            "bad": {
+                "method": "get",
+                "url_template": "https://example.com/{id}",
+                "url_param_specs": { "other": {} }
+            }
+        }
+    }))
+    .expect_err("deserialization should fail fast");
+
+    assert!(
+        err.to_string()
+            .contains("missing url_param_specs entry for slot `id`")
+    );
+}

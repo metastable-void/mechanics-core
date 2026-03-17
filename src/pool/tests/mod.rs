@@ -119,7 +119,7 @@ fn spawn_json_server_owned(
 fn endpoint_config(name: &str, endpoint: HttpEndpoint) -> MechanicsConfig {
     let mut endpoints = HashMap::new();
     endpoints.insert(name.to_owned(), endpoint);
-    MechanicsConfig::new(endpoints)
+    MechanicsConfig::new(endpoints).expect("create config")
 }
 
 fn synthetic_pool(

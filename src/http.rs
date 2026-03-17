@@ -1,7 +1,8 @@
+use crate::error::MechanicsError;
 use boa_engine::{JsData, Trace};
 use boa_gc::Finalize;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -248,6 +249,77 @@ impl HttpEndpoint {
     pub fn with_allow_non_success_status(mut self, allow: bool) -> Self {
         self.allow_non_success_status = allow;
         self
+    }
+
+    pub(crate) fn validate_config(&self) -> std::io::Result<()> {
+        let (chunks, slot_names) = parse_url_template(&self.url_template)?;
+        let slot_set: HashSet<&str> = slot_names.iter().map(String::as_str).collect();
+
+        for slot in &slot_names {
+            let spec = self.url_param_specs.get(slot).ok_or(Error::new(
+                ErrorKind::InvalidInput,
+                format!("missing url_param_specs entry for slot `{slot}`"),
+            ))?;
+            validate_min_max_bounds(slot, spec.min_bytes, spec.max_bytes)?;
+            if let Some(default_value) = spec.default.as_deref() {
+                validate_byte_len(slot, default_value, spec.min_bytes, spec.max_bytes)?;
+            }
+        }
+
+        for configured in self.url_param_specs.keys() {
+            if !slot_set.contains(configured.as_str()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "url_param_specs entry `{configured}` has no placeholder in url_template"
+                    ),
+                ));
+            }
+        }
+
+        let mut template_probe = String::with_capacity(self.url_template.len() + 16);
+        for chunk in chunks {
+            match chunk {
+                UrlTemplateChunk::Literal(s) => template_probe.push_str(&s),
+                UrlTemplateChunk::Slot(_) => template_probe.push('x'),
+            }
+        }
+        let url = reqwest::Url::parse(&template_probe).map_err(into_io_error)?;
+        if url.fragment().is_some() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "url_template must not include URL fragments",
+            ));
+        }
+        if url.query().is_some() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "url_template must not include query parameters; use query_specs instead",
+            ));
+        }
+
+        for spec in &self.query_specs {
+            match spec {
+                QuerySpec::Const { key, .. } => validate_query_key(key)?,
+                QuerySpec::Slotted {
+                    key,
+                    slot,
+                    default,
+                    min_bytes,
+                    max_bytes,
+                    ..
+                } => {
+                    validate_query_key(key)?;
+                    validate_slot_name(slot)?;
+                    validate_min_max_bounds(slot, *min_bytes, *max_bytes)?;
+                    if let Some(default_value) = default {
+                        validate_byte_len(slot, default_value, *min_bytes, *max_bytes)?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn effective_request_body_type(&self) -> EndpointBodyType {
@@ -841,7 +913,7 @@ pub(crate) enum EndpointResponseBody {
 /// Serializable runtime data injected into the JS context.
 ///
 /// This is intended to be supplied per job so workers remain stateless and horizontally scalable.
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
+#[derive(JsData, Trace, Finalize, Serialize, Clone, Debug)]
 pub struct MechanicsConfig {
     pub(crate) endpoints: HashMap<String, HttpEndpoint>,
 }
@@ -851,8 +923,41 @@ impl MechanicsConfig {
     ///
     /// Provide the complete endpoint map needed by a job; workers do not maintain shared endpoint
     /// cache state across jobs.
-    pub fn new(endpoints: HashMap<String, HttpEndpoint>) -> Self {
-        Self { endpoints }
+    pub fn new(endpoints: HashMap<String, HttpEndpoint>) -> Result<Self, MechanicsError> {
+        for (name, endpoint) in &endpoints {
+            endpoint.validate_config().map_err(|e| {
+                MechanicsError::runtime_pool(format!("invalid endpoint `{name}` config: {e}"))
+            })?;
+        }
+        Ok(Self { endpoints })
+    }
+
+    /// Validates all configured endpoints.
+    ///
+    /// This method does not cache across jobs; it only checks consistency for the supplied
+    /// configuration object.
+    pub fn validate(&self) -> Result<(), MechanicsError> {
+        for (name, endpoint) in &self.endpoints {
+            endpoint.validate_config().map_err(|e| {
+                MechanicsError::runtime_pool(format!("invalid endpoint `{name}` config: {e}"))
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de> Deserialize<'de> for MechanicsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawMechanicsConfig {
+            endpoints: HashMap<String, HttpEndpoint>,
+        }
+
+        let raw = RawMechanicsConfig::deserialize(deserializer)?;
+        MechanicsConfig::new(raw.endpoints).map_err(serde::de::Error::custom)
     }
 }
 

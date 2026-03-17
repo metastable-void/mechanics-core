@@ -15,7 +15,7 @@ fn run_maps_reply_timeout_to_run_timeout() {
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
     let err = pool
@@ -56,7 +56,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
     let (reply_tx, _reply_rx) = bounded(1);
     let queued = make_job(
         r#"export default function main() { return 0; }"#,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
     pool.shared
@@ -70,7 +70,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
-        MechanicsConfig::new(HashMap::new()),
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
     let err = pool
@@ -124,7 +124,7 @@ fn run_try_enqueue_reports_queue_full() {
             g.wait();
             let over = make_job(
                 r#"export default function main() { return { over: true }; }"#,
-                MechanicsConfig::new(HashMap::new()),
+                MechanicsConfig::new(HashMap::new()).expect("create config"),
                 Value::Null,
             );
             p.run_try_enqueue(over)
@@ -196,7 +196,7 @@ fn run_reports_enqueue_timeout_when_queue_is_full() {
             g.wait();
             let timeout = make_job(
                 r#"export default function main() { return 2; }"#,
-                MechanicsConfig::new(HashMap::new()),
+                MechanicsConfig::new(HashMap::new()).expect("create config"),
                 Value::Null,
             );
             p.run(timeout)
