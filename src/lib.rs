@@ -998,6 +998,7 @@ mod tests {
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::Barrier;
 
     fn make_job(source: &str, config: MechanicsConfig, arg: Value) -> MechanicsJob {
         MechanicsJob {
@@ -1126,87 +1127,139 @@ mod tests {
     #[test]
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn try_run_reports_queue_full() {
+        let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
+        let blocking_endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(3_000));
+        let blocking_cfg = endpoint_config("slow", blocking_endpoint);
+
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
             queue_capacity: 1,
             execution_limits: MechanicsExecutionLimits {
-                max_execution_time: Duration::from_millis(350),
-                max_loop_iterations: u64::MAX,
-                max_recursion_depth: 10_000,
-                max_stack_size: 1024 * 1024,
+                max_execution_time: Duration::from_secs(3),
+                ..Default::default()
             },
             ..Default::default()
         })
         .expect("create pool");
 
         let blocking = make_job(
-            r#"export default function main() { while (true) {} }"#,
-            MechanicsConfig::new(HashMap::new()),
-            Value::Null,
-        );
-        let queued = make_job(
-            r#"export default function main() { return { queued: true }; }"#,
-            MechanicsConfig::new(HashMap::new()),
-            Value::Null,
-        );
-        let over = make_job(
-            r#"export default function main() { return { over: true }; }"#,
-            MechanicsConfig::new(HashMap::new()),
+            r#"
+                import endpoint from "mechanics:endpoint";
+                export default async function main(arg) {
+                    return await endpoint("slow", arg);
+                }
+            "#,
+            blocking_cfg,
             Value::Null,
         );
 
         let pool_ref = Arc::new(pool);
         let p = Arc::clone(&pool_ref);
         let t = thread::spawn(move || p.run(blocking));
+        thread::sleep(Duration::from_millis(40));
 
-        let _ = pool_ref.try_run(queued);
-        let err = pool_ref.try_run(over).expect_err("third submit should be full");
-        assert!(matches!(err, MechanicsError::QueueFull(_)));
+        let contenders = 8usize;
+        let gate = Arc::new(Barrier::new(contenders + 1));
+        let mut handles = Vec::with_capacity(contenders);
+        for _ in 0..contenders {
+            let p = Arc::clone(&pool_ref);
+            let g = Arc::clone(&gate);
+            handles.push(thread::spawn(move || {
+                g.wait();
+                let over = make_job(
+                    r#"export default function main() { return { over: true }; }"#,
+                    MechanicsConfig::new(HashMap::new()),
+                    Value::Null,
+                );
+                p.try_run(over)
+            }));
+        }
+        gate.wait();
+
+        let mut saw_queue_full = false;
+        for h in handles {
+            match h.join().expect("join contender") {
+                Err(MechanicsError::QueueFull(_)) => saw_queue_full = true,
+                Ok(_) => {}
+                Err(MechanicsError::Execution(_)) => {}
+                Err(other) => panic!("unexpected error: {other}"),
+            }
+        }
+        assert!(saw_queue_full, "expected to observe QueueFull while worker is blocked");
 
         let _ = t.join();
+        let _ = server.join();
     }
 
     #[test]
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn run_reports_enqueue_timeout_when_queue_is_full() {
+        let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
+        let blocking_endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(3_000));
+        let blocking_cfg = endpoint_config("slow", blocking_endpoint);
+
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
             queue_capacity: 1,
-            enqueue_timeout: Duration::from_millis(30),
+            enqueue_timeout: Duration::from_millis(10),
             execution_limits: MechanicsExecutionLimits {
-                max_execution_time: Duration::from_millis(350),
-                max_loop_iterations: u64::MAX,
-                max_recursion_depth: 10_000,
-                max_stack_size: 1024 * 1024,
+                max_execution_time: Duration::from_secs(3),
+                ..Default::default()
             },
             ..Default::default()
         })
         .expect("create pool");
 
         let blocking = make_job(
-            r#"export default function main() { while (true) {} }"#,
-            MechanicsConfig::new(HashMap::new()),
-            Value::Null,
-        );
-        let queued = make_job(
-            r#"export default function main() { return 1; }"#,
-            MechanicsConfig::new(HashMap::new()),
-            Value::Null,
-        );
-        let timeout = make_job(
-            r#"export default function main() { return 2; }"#,
-            MechanicsConfig::new(HashMap::new()),
+            r#"
+                import endpoint from "mechanics:endpoint";
+                export default async function main(arg) {
+                    return await endpoint("slow", arg);
+                }
+            "#,
+            blocking_cfg,
             Value::Null,
         );
 
         let pool_ref = Arc::new(pool);
         let p = Arc::clone(&pool_ref);
         let t = thread::spawn(move || p.run(blocking));
-        let _ = pool_ref.try_run(queued);
-        let err = pool_ref.run(timeout).expect_err("enqueue must time out");
-        assert!(matches!(err, MechanicsError::QueueTimeout(_)));
+        thread::sleep(Duration::from_millis(40));
+
+        let contenders = 8usize;
+        let gate = Arc::new(Barrier::new(contenders + 1));
+        let mut handles = Vec::with_capacity(contenders);
+        for _ in 0..contenders {
+            let p = Arc::clone(&pool_ref);
+            let g = Arc::clone(&gate);
+            handles.push(thread::spawn(move || {
+                g.wait();
+                let timeout = make_job(
+                    r#"export default function main() { return 2; }"#,
+                    MechanicsConfig::new(HashMap::new()),
+                    Value::Null,
+                );
+                p.run(timeout)
+            }));
+        }
+        gate.wait();
+
+        let mut saw_queue_timeout = false;
+        for h in handles {
+            match h.join().expect("join contender") {
+                Err(MechanicsError::QueueTimeout(_)) => saw_queue_timeout = true,
+                Ok(_) => {}
+                Err(MechanicsError::Execution(_)) => {}
+                Err(other) => panic!("unexpected error: {other}"),
+            }
+        }
+        assert!(
+            saw_queue_timeout,
+            "expected to observe QueueTimeout while worker is blocked"
+        );
 
         let _ = t.join();
+        let _ = server.join();
     }
 
     #[test]
