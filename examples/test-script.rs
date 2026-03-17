@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use mechanics_core::{MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig};
@@ -10,11 +9,12 @@ fn main() -> std::io::Result<()> {
         _ => {
             println!("Usage: {} <json_config_path> <js_path>", &args[0]);
             return Ok(());
-        },
+        }
     };
     let config_json = std::fs::read_to_string(config_path)?;
     let js_source = std::fs::read_to_string(js_path)?;
-    let config: MechanicsConfig = serde_json::from_str(&config_json).map_err(std::io::Error::other)?;
+    let config: MechanicsConfig =
+        serde_json::from_str(&config_json).map_err(std::io::Error::other)?;
     let pool = MechanicsPool::new(MechanicsPoolConfig::default()).map_err(std::io::Error::other)?;
     let job = MechanicsJob {
         mod_source: js_source.into(),
