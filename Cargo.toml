@@ -13,6 +13,7 @@ homepage = "https://github.com/metastable-void/mechanics-core"
 [dependencies]
 boa_engine = { version = "0.21.0", features = ["temporal"] }
 boa_gc = "0.21.0"
+crossbeam-channel = "0.5.15"
 futures-concurrency = "7.7.1"
 futures-lite = "2.6.1"
 parking_lot = "0.12.5"
