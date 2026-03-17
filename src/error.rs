@@ -2,6 +2,7 @@ use std::{borrow::Cow, fmt::Display};
 
 /// Error type used across script execution and pool operations.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum MechanicsError {
     /// Script execution failed.
     Execution(Cow<'static, str>),
