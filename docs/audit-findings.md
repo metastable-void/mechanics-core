@@ -17,11 +17,10 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 - Why: job errors in queue draining paths are printed with `eprintln!` and not propagated.
 - Impact: caller may receive successful result while background rejection/error happened.
 
-3. `try_run` name/expectation mismatch.
-- Location: `src/pool.rs:396-446`
-- Why: enqueue is non-blocking, but method still blocks waiting for result.
-- Impact: callers may expect immediate return semantics from the method name.
-- Note: behavior is now partially documented, but API naming remains potentially misleading.
+3. [DONE] `try_run` name/expectation mismatch.
+- Fixed in: `src/pool.rs` (`try_run` renamed to `run_try_enqueue`).
+- Previous location: `src/pool.rs:396-446`
+- Previous issue: enqueue was non-blocking, but method still blocked waiting for result while name implied full non-blocking behavior.
 
 4. Reply-timeout model is heuristic and can become very large.
 - Location: `src/pool.rs:204-217`
@@ -67,5 +66,4 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 1. Fix pending Promise behavior (item 1).
 2. Decide and implement policy for uncaught queued job errors (item 2).
 3. Tighten HTTP semantics (items 5, 6).
-4. Decide API strategy for `try_run` naming/behavior (item 3).
-5. Remove unused dependency and reduce Tokio features if desired (items 9, 10).
+4. Remove unused dependency and reduce Tokio features if desired (items 9, 10).

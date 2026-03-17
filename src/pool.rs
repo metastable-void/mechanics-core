@@ -29,7 +29,7 @@ pub struct MechanicsPoolConfig {
     pub enqueue_timeout: Duration,
     /// Script execution limits applied to every job.
     ///
-    /// `run`/`try_run` also use `max_execution_time` to derive a bounded reply wait budget.
+    /// `run`/`run_try_enqueue` also use `max_execution_time` to derive a bounded reply wait budget.
     pub execution_limits: MechanicsExecutionLimits,
     /// Default timeout in milliseconds for endpoint HTTP calls.
     ///
@@ -396,7 +396,7 @@ impl MechanicsPool {
     /// Attempts to enqueue a job without waiting for queue space.
     ///
     /// After successful enqueue, this uses the same bounded reply timeout behavior as [`Self::run`].
-    pub fn try_run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
+    pub fn run_try_enqueue(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
         }
@@ -599,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn run_and_try_run_fail_when_pool_closed() {
+    fn run_and_run_try_enqueue_fail_when_pool_closed() {
         let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
         pool.shared.closed.store(true, Ordering::Release);
 
@@ -614,13 +614,13 @@ mod tests {
         assert!(matches!(err, MechanicsError::PoolClosed(_)));
 
         let err = pool
-            .try_run(job)
-            .expect_err("closed pool must reject try_run");
+            .run_try_enqueue(job)
+            .expect_err("closed pool must reject run_try_enqueue");
         assert!(matches!(err, MechanicsError::PoolClosed(_)));
     }
 
     #[test]
-    fn run_and_try_run_fail_when_workers_unavailable_and_restart_blocked() {
+    fn run_and_run_try_enqueue_fail_when_workers_unavailable_and_restart_blocked() {
         let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
         pool.shared.restart_blocked.store(true, Ordering::Release);
 
@@ -635,7 +635,7 @@ mod tests {
         assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 
         let err = pool
-            .try_run(job)
+            .run_try_enqueue(job)
             .expect_err("must fail when no workers and restart blocked");
         assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
     }
@@ -872,7 +872,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires local socket bind permission in the execution environment"]
-    fn try_run_reports_queue_full() {
+    fn run_try_enqueue_reports_queue_full() {
         let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
         let blocking_endpoint =
             HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(3_000));
@@ -918,7 +918,7 @@ mod tests {
                     MechanicsConfig::new(HashMap::new()),
                     Value::Null,
                 );
-                p.try_run(over)
+                p.run_try_enqueue(over)
             }));
         }
         gate.wait();

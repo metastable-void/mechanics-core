@@ -72,7 +72,7 @@ Timeout behavior:
 - success JSON value,
 - or `MechanicsError` (`QueueTimeout`, `QueueFull`, `Execution`, etc.).
 
-### `try_run(job)`
+### `run_try_enqueue(job)`
 - Non-blocking enqueue attempt.
 - If enqueue succeeds, it still waits for execution result (same bounded reply timeout model as `run`).
 
