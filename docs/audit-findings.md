@@ -27,10 +27,10 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 - Previous location: `src/pool.rs:204-217`
 - Previous issue: timeout budget scaled with `queue_capacity + worker_count + 1`.
 
-5. HTTP status codes are not validated before JSON parse.
-- Location: `src/http.rs:67-68`
-- Why: response always parsed as JSON regardless of status.
-- Impact: 4xx/5xx responses may be treated as success if JSON body parses.
+5. [DONE] HTTP status codes are not validated before JSON parse.
+- Fixed in: `src/http.rs` (`error_for_status` by default, endpoint opt-in to allow non-success status), `src/pool.rs` (regression tests).
+- Previous location: `src/http.rs:67-68`
+- Previous issue: response was parsed as JSON regardless of status.
 
 6. Invalid configured headers are silently dropped.
 - Location: `src/http.rs:55-58`

@@ -529,8 +529,25 @@ mod tests {
         }
     }
 
-    fn spawn_json_server(
+    fn http_status_reason(status: u16) -> &'static str {
+        match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            502 => "Bad Gateway",
+            503 => "Service Unavailable",
+            504 => "Gateway Timeout",
+            _ => "Status",
+        }
+    }
+
+    fn spawn_json_server_with_status(
         delay: Duration,
+        status: u16,
         response_json: &'static str,
     ) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
@@ -549,7 +566,8 @@ mod tests {
 
             let body = response_json.as_bytes();
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                http_status_reason(status),
                 body.len()
             );
             stream
@@ -560,6 +578,13 @@ mod tests {
         });
 
         (format!("http://{addr}"), handle)
+    }
+
+    fn spawn_json_server(
+        delay: Duration,
+        response_json: &'static str,
+    ) -> (String, thread::JoinHandle<()>) {
+        spawn_json_server_with_status(delay, 200, response_json)
     }
 
     fn endpoint_config(name: &str, endpoint: HttpEndpoint) -> MechanicsConfig {
@@ -1246,6 +1271,77 @@ mod tests {
             .run(job)
             .expect("endpoint-level timeout should allow success");
         assert_eq!(value["ok"], json!(true));
+
+        let _ = server.join();
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn endpoint_non_success_status_is_error_by_default() {
+        let (url, server) =
+            spawn_json_server_with_status(Duration::from_millis(0), 500, r#"{"ok":false}"#);
+        let endpoint = HttpEndpoint::new(&url, HashMap::new());
+        let config = endpoint_config("failing", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("failing", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"status"}));
+        let err = pool
+            .run(job)
+            .expect_err("non-success status must fail by default");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("500") || msg.contains("status"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+
+        let _ = server.join();
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn endpoint_non_success_status_can_be_allowed() {
+        let (url, server) =
+            spawn_json_server_with_status(Duration::from_millis(0), 500, r#"{"ok":false}"#);
+        let endpoint = HttpEndpoint::new(&url, HashMap::new()).with_allow_non_success_status(true);
+        let config = endpoint_config("failing", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("failing", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"status"}));
+        let value = pool
+            .run(job)
+            .expect("opt-in should allow JSON parse on non-success status");
+        assert_eq!(value["ok"], json!(false));
 
         let _ = server.join();
     }

@@ -15,6 +15,8 @@ pub struct HttpEndpoint {
     url: String,
     headers: HashMap<String, String>,
     timeout_ms: Option<u64>,
+    #[serde(default)]
+    allow_non_success_status: bool,
 }
 
 impl HttpEndpoint {
@@ -30,6 +32,7 @@ impl HttpEndpoint {
             url: url.to_owned(),
             headers,
             timeout_ms: None,
+            allow_non_success_status: false,
         }
     }
 
@@ -39,6 +42,14 @@ impl HttpEndpoint {
     /// If this is `None`, the pool default timeout is used.
     pub fn with_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Allows non-success (non-2xx) HTTP status responses to proceed to JSON parsing.
+    ///
+    /// Defaults to `false`, which treats non-success statuses as request errors.
+    pub fn with_allow_non_success_status(mut self, allow: bool) -> Self {
+        self.allow_non_success_status = allow;
         self
     }
 
@@ -65,6 +76,11 @@ impl HttpEndpoint {
             req = req.timeout(Duration::from_millis(timeout_ms));
         }
         let res = req.send().await.map_err(into_io_error)?;
+        let res = if self.allow_non_success_status {
+            res
+        } else {
+            res.error_for_status().map_err(into_io_error)?
+        };
         let res: Res = res.json().await.map_err(into_io_error)?;
         Ok(res)
     }

@@ -54,6 +54,8 @@ export default async function main(arg) {
 Resolution behavior:
 - `name` must match a key in `MechanicsConfig.endpoints`.
 - Call performs HTTP POST with JSON body.
+- By default, non-2xx HTTP statuses fail the call.
+- `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows JSON parsing on non-2xx statuses.
 - Response body is parsed as JSON and returned to JS.
 
 Timeout behavior:
