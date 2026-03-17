@@ -68,18 +68,21 @@ Timeout behavior:
 - bounded job queue (`queue_capacity`),
 - N worker threads (`worker_count`),
 - supervisor thread with restart rate limiter (`restart_window`, `max_restarts_in_window`).
-- If any worker fails during startup runtime initialization, construction fails with `MechanicsError::RuntimePool`.
+- If any worker fails during startup runtime initialization, construction fails with `MechanicsError::RuntimePool` (no partial usable pool is returned).
 
 ### `run(job)`
 - Blocks waiting for enqueue up to `enqueue_timeout`.
 - Entire API call is bounded by `run_timeout` (from call entry through result wait).
 - Returns:
 - success JSON value,
-- or `MechanicsError` (`RunTimeout`, `QueueTimeout`, `QueueFull`, `Execution`, etc.).
+- or `MechanicsError` (`RunTimeout`, `QueueTimeout`, `Execution`, etc.).
+- `QueueTimeout` means queue admission wait elapsed.
+- `RunTimeout` means the overall API-call deadline elapsed (enqueue+reply path).
 
 ### `run_try_enqueue(job)`
 - Non-blocking enqueue attempt.
 - If enqueue succeeds, it still waits for execution result (same bounded reply timeout model as `run`).
+- If queue is already full, returns `QueueFull` immediately.
 
 ### Shutdown
 Dropping `MechanicsPool`:

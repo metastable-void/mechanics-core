@@ -41,6 +41,7 @@ pub struct MechanicsPoolConfig {
     pub restart_window: Duration,
     /// Maximum automatic worker restarts allowed within `restart_window`.
     pub max_restarts_in_window: usize,
+    /// Test-only hook to force worker runtime init failures during pool creation.
     #[cfg(test)]
     force_worker_runtime_init_failure: bool,
 }
@@ -319,6 +320,13 @@ impl MechanicsPool {
     }
 
     /// Creates a new mechanics runtime pool.
+    ///
+    /// Construction is fail-fast:
+    /// - invalid config values return [`MechanicsError::RuntimePool`],
+    /// - each worker must initialize its runtime successfully,
+    /// - supervisor thread startup must succeed.
+    ///
+    /// If any of those steps fail, no usable pool is returned.
     pub fn new(config: MechanicsPoolConfig) -> Result<Self, MechanicsError> {
         if config.worker_count == 0 {
             return Err(MechanicsError::runtime_pool("worker_count must be > 0"));
@@ -519,6 +527,8 @@ impl MechanicsPool {
     ///
     /// After successful enqueue, total call duration is bounded by
     /// [`MechanicsPoolConfig::run_timeout`], like [`Self::run`].
+    ///
+    /// Returns [`MechanicsError::QueueFull`] immediately if the queue is currently full.
     pub fn run_try_enqueue(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
@@ -593,6 +603,7 @@ impl Drop for MechanicsPool {
             }
         }
 
+        // Reap stale finished handles before deciding shutdown signal count.
         let worker_count = self.shared.live_workers();
         for _ in 0..worker_count {
             let _ = self.shared.tx.send(PoolMessage::Shutdown);
