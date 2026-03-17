@@ -3,6 +3,9 @@ use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
 /// One script execution request submitted to [`MechanicsPool`].
+///
+/// Jobs are expected to be self-contained for stateless runtime execution.
+/// Do not assume any cross-job cache residency in workers.
 #[derive(Debug, Clone)]
 pub struct MechanicsJob {
     /// ECMAScript module source containing a `default` export callable.

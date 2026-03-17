@@ -149,6 +149,9 @@ pub enum QuerySpec {
 }
 
 /// HTTP endpoint configuration used by the runtime-provided JS helper.
+///
+/// Endpoint definitions are pure configuration inputs and should be treated as stateless.
+/// Any caching behavior should be implemented outside this crate.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
 pub struct HttpEndpoint {
     method: HttpMethod,
@@ -786,6 +789,8 @@ pub(crate) enum EndpointResponseBody {
 }
 
 /// Serializable runtime data injected into the JS context.
+///
+/// This is intended to be supplied per job so workers remain stateless and horizontally scalable.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
 pub struct MechanicsConfig {
     pub(crate) endpoints: HashMap<String, HttpEndpoint>,
@@ -793,6 +798,9 @@ pub struct MechanicsConfig {
 
 impl MechanicsConfig {
     /// Builds runtime state from endpoint definitions.
+    ///
+    /// Provide the complete endpoint map needed by a job; workers do not maintain shared endpoint
+    /// cache state across jobs.
     pub fn new(endpoints: HashMap<String, HttpEndpoint>) -> Self {
         Self { endpoints }
     }

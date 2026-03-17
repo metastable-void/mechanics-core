@@ -21,6 +21,9 @@ use std::{
 };
 
 /// Configuration for constructing a [`MechanicsPool`].
+///
+/// This configuration is intended for stateless workers that can be replicated horizontally.
+/// Avoid correctness assumptions that depend on in-process caches or sticky worker routing.
 #[derive(Debug, Clone)]
 pub struct MechanicsPoolConfig {
     /// Number of worker threads in the pool.
@@ -296,6 +299,9 @@ impl MechanicsPoolShared {
 }
 
 /// Thread pool of script runtimes for executing [`MechanicsJob`] workloads.
+///
+/// The pool is designed for stateless execution across interchangeable workers.
+/// Any data required for one execution should be carried by the submitted job.
 pub struct MechanicsPool {
     shared: Arc<MechanicsPoolShared>,
     enqueue_timeout: Duration,

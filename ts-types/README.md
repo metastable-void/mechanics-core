@@ -5,4 +5,4 @@ This directory contains TypeScript declarations for synthetic runtime modules pr
 ## Policy
 - Any public API change to runtime synthetic modules must update these `.d.ts` files in the same change.
 - Keep declaration names and signatures aligned with runtime behavior docs in `docs/behavior.md`.
-
+- Keep JSDoc comments aligned with runtime behavior so editor IntelliSense stays accurate.

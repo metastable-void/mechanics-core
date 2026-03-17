@@ -2,6 +2,9 @@
 
 Core runtime for executing JavaScript automation modules with Boa in a worker pool.
 
+Stateless by design: jobs should be self-contained, and correctness must not depend on
+in-process caching or sticky worker affinity. This supports horizontal scaling.
+
 ## What this crate provides
 - Bounded worker pool (`MechanicsPool`) for job execution.
 - Per-job execution limits (`MechanicsExecutionLimits`).
