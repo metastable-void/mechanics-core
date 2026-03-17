@@ -36,10 +36,9 @@ impl HttpEndpoint {
     }
 
     /// Sends a JSON POST request and deserializes the JSON response into `Res`.
-    pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(&self, req_data: &Req) -> std::io::Result<Res> {
+    pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(&self, client: reqwest::Client, req_data: &Req) -> std::io::Result<Res> {
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
-        let client = reqwest::Client::builder().build().map_err(into_io_error)?;
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
             match (k.try_into() as Result<HeaderName, _>, v.try_into()) {
@@ -235,13 +234,21 @@ pub struct MechanicsJob {
 pub(crate) struct MechanicsState {
     #[unsafe_ignore_trace]
     config: Arc<MechanicsConfig>,
+
+    #[unsafe_ignore_trace]
+    reqwest_client: reqwest::Client,
 }
 
 impl MechanicsState {
-    pub(crate) fn new(config: Arc<MechanicsConfig>) -> Self {
+    pub(crate) fn new(config: Arc<MechanicsConfig>, client: reqwest::Client) -> Self {
         Self {
             config,
+            reqwest_client: client,
         }
+    }
+
+    pub(crate) fn reqwest(&self) -> reqwest::Client {
+        self.reqwest_client.clone()
     }
 }
 
@@ -285,6 +292,7 @@ impl From<&'static str> for MechanicsError {
 /// Script runtime that hosts a Boa context and exposes helper modules.
 pub struct RuntimeInternal {
     ctx: Context,
+    reqwest_client: reqwest::Client,
 }
 
 impl RuntimeInternal {
@@ -316,7 +324,7 @@ impl RuntimeInternal {
                 let endpoint = state.config.endpoints.get(&endpoint_name)
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")))?;
                 
-                let res: Value = endpoint.post(&req_body).await
+                let res: Value = endpoint.post(state.reqwest(), &req_body).await
                     .map_err(|e| JsError::from_rust(e))?;
 
                 let res = JsValue::from_json(&res, &mut ctx.borrow_mut())?;
@@ -335,8 +343,10 @@ impl RuntimeInternal {
         
         loader.define_module(js_string!("mechanics:endpoint"), module);
 
+        let reqwest_client = reqwest::Client::new();
         Self {
             ctx: context,
+            reqwest_client,
         }
     }
 
@@ -345,7 +355,7 @@ impl RuntimeInternal {
         let arg = job.arg;
         let config = job.config;
         let source = job.mod_source;
-        let state = MechanicsState::new(config);
+        let state = MechanicsState::new(config, self.reqwest_client.clone());
 
         let source = source.as_ref();
         let mut ctx = &mut self.ctx;
