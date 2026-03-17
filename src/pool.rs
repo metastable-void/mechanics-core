@@ -210,8 +210,10 @@ impl MechanicsPoolShared {
                 MechanicsError::runtime_pool(format!("failed to spawn worker thread: {e}"))
             })?;
 
-        let mut workers = shared.workers_write();
-        workers.insert(worker_id, handle);
+        {
+            let mut workers = shared.workers_write();
+            workers.insert(worker_id, handle);
+        }
         let _ = start_tx.send(());
         shared.restart_blocked.store(false, Ordering::Release);
         Ok(worker_id)

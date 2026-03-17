@@ -43,10 +43,10 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 - Fixed in: `src/runtime.rs` (`ContextBuilder::build` errors are mapped to `MechanicsError::RuntimePool`), `src/executor.rs` (Tokio runtime build returns `Result`; unsupported job types become JS errors), `src/http.rs` (default header values validated without panic paths), `src/pool.rs` (fallible `thread::Builder::spawn` replaces panic-prone `thread::spawn` in runtime paths; pool locks migrated to `parking_lot`).
 - Previous issue: panic-prone convenience methods (`unwrap`, explicit `panic!`, panic-capable header insertion helpers) were used in runtime paths.
 
-8. Worker startup handshake sends rendezvous signal while holding worker map lock.
-- Location: `src/pool.rs:193-196`
-- Why: `start_tx.send(())` on zero-capacity channel while lock is held.
-- Impact: not incorrect, but can increase lock contention during worker startup.
+8. [DONE] Worker startup handshake sends rendezvous signal while holding worker map lock.
+- Fixed in: `src/pool.rs` (worker map lock is released before startup rendezvous send).
+- Previous location: `src/pool.rs:193-196`
+- Previous issue: `start_tx.send(())` on zero-capacity channel was performed while lock was held.
 
 ## Redundant / unused
 
