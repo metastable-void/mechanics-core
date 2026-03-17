@@ -5,7 +5,7 @@ Core runtime for executing JavaScript automation modules with Boa in a worker po
 ## What this crate provides
 - Bounded worker pool (`MechanicsPool`) for job execution.
 - Per-job execution limits (`MechanicsExecutionLimits`).
-- Synthetic JS module `mechanics:endpoint` for HTTP JSON POST.
+- Synthetic JS module `mechanics:endpoint` for preconfigured HTTP JSON calls (`GET`/`POST`/`PUT`/`DELETE`).
 - Structured error model (`MechanicsError`).
 
 Public API re-exports are in `src/lib.rs`.

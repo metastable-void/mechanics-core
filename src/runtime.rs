@@ -1,7 +1,7 @@
 use crate::{
     error::MechanicsError,
     executor::{CustomModuleLoader, Queue},
-    http::MechanicsConfig,
+    http::{MechanicsConfig, parse_endpoint_call_options},
     job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
@@ -147,12 +147,9 @@ impl RuntimeInternal {
                     .ok_or(JsError::from_native(
                         JsNativeError::typ().with_message("endpoint is not a string"),
                     ))?;
-                let req_body = args
-                    .get_or_undefined(1)
-                    .to_json(&mut ctx.borrow_mut())?
-                    .ok_or(JsError::from_native(
-                        JsNativeError::typ().with_message("JSON error"),
-                    ))?;
+                let options_json = args.get_or_undefined(1).to_json(&mut ctx.borrow_mut())?;
+                let req_options =
+                    parse_endpoint_call_options(options_json).map_err(JsError::from_rust)?;
 
                 let state = {
                     let ctx_ref = ctx.borrow();
@@ -174,7 +171,7 @@ impl RuntimeInternal {
                         ))?;
 
                 let res: Value = endpoint
-                    .post(state.reqwest(), state.default_timeout_ms(), &req_body)
+                    .execute(state.reqwest(), state.default_timeout_ms(), &req_options)
                     .await
                     .map_err(JsError::from_rust)?;
 

@@ -3,13 +3,14 @@
 ## Purpose
 `mechanics-core` executes user-provided JavaScript modules inside Boa (`boa_engine`) with:
 - per-job execution limits,
-- a built-in `mechanics:endpoint` helper for HTTP JSON POST,
+- a built-in `mechanics:endpoint` helper for preconfigured HTTP calls,
 - a worker pool for concurrent job execution.
 
 The crate API is exported from `src/lib.rs`:
 - `MechanicsPool`, `MechanicsPoolConfig`
 - `MechanicsJob`, `MechanicsExecutionLimits`
-- `MechanicsConfig`, `HttpEndpoint`
+- `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`
+- `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
 - `MechanicsError`
 
 ## High-level model
@@ -41,23 +42,98 @@ At runtime:
 If JSON conversion fails, execution fails with `MechanicsError::Execution`.
 
 ## Built-in module: `mechanics:endpoint`
-Runtime registers a synthetic module named `mechanics:endpoint` with default export `endpoint(name, payload)`.
+Runtime registers a synthetic module named `mechanics:endpoint` with default export `endpoint(name, options)`.
 
 ```js
 import endpoint from "mechanics:endpoint";
 
 export default async function main(arg) {
-  return await endpoint("primary", arg);
+  return await endpoint("primary", {
+    urlParams: { user_id: "u-123" },
+    queries: { page: "1", filter: "active" },
+    body: arg
+  });
 }
 ```
 
 Resolution behavior:
 - `name` must match a key in `MechanicsConfig.endpoints`.
-- Call performs HTTP POST with JSON body.
+- Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`DELETE`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
+- URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
+- Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
 - Configured headers are validated; invalid names/values fail the call.
 - By default, non-2xx HTTP statuses fail the call.
 - `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows JSON parsing on non-2xx statuses.
 - Response body is parsed as JSON and returned to JS.
+
+`endpoint(name, options)` payload shape (camelCase):
+- `urlParams`: object of string slot values for URL template substitution.
+- `queries`: object of string slot values used by configured slotted query specs.
+- `body`: JSON value payload (`POST`/`PUT`); for `GET`/`DELETE` this must be `null` or omitted.
+
+Config shape is JSON-friendly and snake_case (`serde`):
+- endpoint definitions use `method`, `url_template`, `url_param_specs`, and `query_specs`.
+- `url_template` is a full URL template string and placeholder names must be unique.
+- `url_param_specs` maps placeholder names to constraints and optional defaults.
+- `query_specs` is an ordered list with `type: "const" | "slotted"`.
+- slotted query `mode` values:
+- `required`: query value must resolve and must be non-empty.
+- `required_allow_empty`: query value must resolve and may be empty.
+- `optional`: missing/empty is treated as omitted.
+- `optional_allow_empty`: missing is omitted; if provided, empty is emitted.
+- URL param default behavior:
+- if `default` exists, missing/empty JS value uses `default`.
+- if `default` is absent, missing/empty JS value resolves as empty.
+
+Byte-length validation:
+- `min_bytes` / `max_bytes` for URL/query slots are validated against raw UTF-8 byte length.
+
+Minimal endpoint config example (JSON):
+
+```json
+{
+  "endpoints": {
+    "primary": {
+      "method": "post",
+      "url_template": "https://api.example.com/users/{user_id}/messages/{message_id}",
+      "url_param_specs": {
+        "user_id": {
+          "min_bytes": 1,
+          "max_bytes": 64
+        },
+        "message_id": {
+          "default": "latest",
+          "min_bytes": 1,
+          "max_bytes": 64
+        }
+      },
+      "query_specs": [
+        { "type": "const", "key": "v", "value": "1" },
+        {
+          "type": "slotted",
+          "key": "page",
+          "slot": "page",
+          "mode": "optional",
+          "min_bytes": 1,
+          "max_bytes": 8
+        },
+        {
+          "type": "slotted",
+          "key": "filter",
+          "slot": "filter",
+          "mode": "required_allow_empty",
+          "default": "all"
+        }
+      ],
+      "headers": {
+        "x-api-key": "redacted"
+      },
+      "timeout_ms": 5000,
+      "allow_non_success_status": false
+    }
+  }
+}
+```
 
 Timeout behavior:
 - Endpoint timeout = `HttpEndpoint::with_timeout_ms(...)` if set,
@@ -123,7 +199,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mechanics_core::{
-    HttpEndpoint, MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig,
+    HttpEndpoint, HttpMethod, MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig,
 };
 use serde_json::json;
 
@@ -131,7 +207,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut endpoints = HashMap::new();
     endpoints.insert(
         "primary".to_owned(),
-        HttpEndpoint::new("https://httpbin.org/post", HashMap::new()),
+        HttpEndpoint::new(HttpMethod::Post, "https://httpbin.org/post", HashMap::new()),
     );
 
     let config = MechanicsConfig::new(endpoints);
@@ -142,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r#"
             import endpoint from \"mechanics:endpoint\";
             export default async function main(arg) {
-                return await endpoint(\"primary\", arg);
+                return await endpoint(\"primary\", { body: arg });
             }
             "#,
         ),
@@ -160,7 +236,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Only `mechanics:endpoint` is provided as importable synthetic module by default.
 - Results must be JSON-convertible to be returned successfully.
 - Queue cancellation is best-effort; jobs already executing continue until runtime completion/limits.
-- HTTP helper is JSON-in / JSON-out only.
+- HTTP helper is JSON-out only; request body is JSON for `POST`/`PUT`.
+- URL/query value sources are constrained to configured slots (no arbitrary URL/method/header override from JS).
 - This crate currently does not include persistent module caching (source is parsed per job).
 
 ## Test coverage shape

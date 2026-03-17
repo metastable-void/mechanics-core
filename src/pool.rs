@@ -623,7 +623,7 @@ impl Drop for MechanicsPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HttpEndpoint, MechanicsConfig};
+    use crate::{HttpEndpoint, HttpMethod, MechanicsConfig};
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1146,13 +1146,13 @@ mod tests {
 
         let mut headers = HashMap::new();
         headers.insert("bad header".to_owned(), "value".to_owned());
-        let endpoint = HttpEndpoint::new("https://example.com/anything", headers);
+        let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://example.com/anything", headers);
         let config = endpoint_config("bad", endpoint);
 
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("bad", arg);
+                return await endpoint("bad", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"headers"}));
@@ -1162,6 +1162,72 @@ mod tests {
         match err {
             MechanicsError::Execution(msg) => {
                 assert!(msg.contains("invalid header name"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_requires_object_options() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Post,
+            "https://example.com/anything",
+            HashMap::new(),
+        );
+        let config = endpoint_config("ep", endpoint);
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", 1);
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("non-object endpoint options must fail");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("endpoint options must be an object"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_get_rejects_non_null_body() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Get,
+            "https://example.com/anything",
+            HashMap::new(),
+        );
+        let config = endpoint_config("ep", endpoint);
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: { x: 1 } });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("GET endpoint should reject non-null body");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("does not accept a request body"));
             }
             other => panic!("unexpected error kind: {other}"),
         }
@@ -1253,7 +1319,8 @@ mod tests {
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn execution_timeout_stops_slow_async_job() {
         let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);
-        let endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(2_000));
+        let endpoint =
+            HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new()).with_timeout_ms(Some(2_000));
         let config = endpoint_config("slow", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1269,7 +1336,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("slow", arg);
+                return await endpoint("slow", { body: arg });
             }
         "#;
         let job = make_job(source, config, Value::Null);
@@ -1288,7 +1355,7 @@ mod tests {
     fn run_try_enqueue_reports_queue_full() {
         let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
         let blocking_endpoint =
-            HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(3_000));
+            HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new()).with_timeout_ms(Some(3_000));
         let blocking_cfg = endpoint_config("slow", blocking_endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1306,7 +1373,7 @@ mod tests {
             r#"
                 import endpoint from "mechanics:endpoint";
                 export default async function main(arg) {
-                    return await endpoint("slow", arg);
+                    return await endpoint("slow", { body: arg });
                 }
             "#,
             blocking_cfg,
@@ -1359,7 +1426,7 @@ mod tests {
     fn run_reports_enqueue_timeout_when_queue_is_full() {
         let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
         let blocking_endpoint =
-            HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(3_000));
+            HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new()).with_timeout_ms(Some(3_000));
         let blocking_cfg = endpoint_config("slow", blocking_endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1378,7 +1445,7 @@ mod tests {
             r#"
                 import endpoint from "mechanics:endpoint";
                 export default async function main(arg) {
-                    return await endpoint("slow", arg);
+                    return await endpoint("slow", { body: arg });
                 }
             "#,
             blocking_cfg,
@@ -1430,7 +1497,7 @@ mod tests {
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn endpoint_uses_pool_default_timeout() {
         let (url, server) = spawn_json_server(Duration::from_millis(180), r#"{"ok":true}"#);
-        let endpoint = HttpEndpoint::new(&url, HashMap::new());
+        let endpoint = HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new());
         let config = endpoint_config("slow", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1447,7 +1514,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("slow", arg);
+                return await endpoint("slow", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"world"}));
@@ -1472,7 +1539,8 @@ mod tests {
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn endpoint_specific_timeout_overrides_pool_default() {
         let (url, server) = spawn_json_server(Duration::from_millis(150), r#"{"ok":true}"#);
-        let endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(400));
+        let endpoint =
+            HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new()).with_timeout_ms(Some(400));
         let config = endpoint_config("slow", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1489,7 +1557,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("slow", arg);
+                return await endpoint("slow", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"world"}));
@@ -1506,7 +1574,7 @@ mod tests {
     fn endpoint_non_success_status_is_error_by_default() {
         let (url, server) =
             spawn_json_server_with_status(Duration::from_millis(0), 500, r#"{"ok":false}"#);
-        let endpoint = HttpEndpoint::new(&url, HashMap::new());
+        let endpoint = HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new());
         let config = endpoint_config("failing", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1522,7 +1590,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("failing", arg);
+                return await endpoint("failing", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"status"}));
@@ -1544,7 +1612,8 @@ mod tests {
     fn endpoint_non_success_status_can_be_allowed() {
         let (url, server) =
             spawn_json_server_with_status(Duration::from_millis(0), 500, r#"{"ok":false}"#);
-        let endpoint = HttpEndpoint::new(&url, HashMap::new()).with_allow_non_success_status(true);
+        let endpoint = HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new())
+            .with_allow_non_success_status(true);
         let config = endpoint_config("failing", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1560,7 +1629,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("failing", arg);
+                return await endpoint("failing", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"status"}));
@@ -1575,7 +1644,8 @@ mod tests {
     #[test]
     #[ignore = "requires internet access to https://httpbin.org"]
     fn internet_endpoint_roundtrip_httpbin() {
-        let endpoint = HttpEndpoint::new("https://httpbin.org/post", HashMap::new());
+        let endpoint =
+            HttpEndpoint::new(HttpMethod::Post, "https://httpbin.org/post", HashMap::new());
         let config = endpoint_config("internet", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1592,7 +1662,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("internet", arg);
+                return await endpoint("internet", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"internet"}));
@@ -1609,7 +1679,11 @@ mod tests {
     #[test]
     #[ignore = "requires internet access to https://httpbin.org"]
     fn internet_http_timeout_from_pool_default() {
-        let endpoint = HttpEndpoint::new("https://httpbin.org/delay/3", HashMap::new());
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Post,
+            "https://httpbin.org/delay/3",
+            HashMap::new(),
+        );
         let config = endpoint_config("internet", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1626,7 +1700,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("internet", arg);
+                return await endpoint("internet", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"timeout"}));
@@ -1651,8 +1725,12 @@ mod tests {
     #[test]
     #[ignore = "requires internet access to https://httpbin.org"]
     fn internet_endpoint_timeout_overrides_pool_default() {
-        let endpoint = HttpEndpoint::new("https://httpbin.org/delay/1", HashMap::new())
-            .with_timeout_ms(Some(4_000));
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Post,
+            "https://httpbin.org/delay/1",
+            HashMap::new(),
+        )
+        .with_timeout_ms(Some(4_000));
         let config = endpoint_config("internet", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1669,7 +1747,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("internet", arg);
+                return await endpoint("internet", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"override"}));
@@ -1701,7 +1779,7 @@ mod tests {
     fn internet_endpoint_sends_custom_headers() {
         let mut headers = HashMap::new();
         headers.insert("X-Mechanics-Test".to_owned(), "header-check".to_owned());
-        let endpoint = HttpEndpoint::new("https://httpbin.org/anything", headers);
+        let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://httpbin.org/anything", headers);
         let config = endpoint_config("internet", endpoint);
 
         let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -1718,7 +1796,7 @@ mod tests {
         let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(arg) {
-                return await endpoint("internet", arg);
+                return await endpoint("internet", { body: arg });
             }
         "#;
         let job = make_job(source, config, json!({"hello":"headers"}));

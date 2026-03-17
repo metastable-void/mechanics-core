@@ -6,6 +6,8 @@ mod pool;
 mod runtime;
 
 pub use error::MechanicsError;
-pub use http::{HttpEndpoint, MechanicsConfig};
+pub use http::{
+    HttpEndpoint, HttpMethod, MechanicsConfig, QuerySpec, SlottedQueryMode, UrlParamSpec,
+};
 pub use job::{MechanicsExecutionLimits, MechanicsJob};
 pub use pool::{MechanicsPool, MechanicsPoolConfig};
