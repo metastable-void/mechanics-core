@@ -100,6 +100,7 @@ impl MechanicsState {
 /// Script runtime that hosts a Boa context and exposes helper modules.
 pub(crate) struct RuntimeInternal {
     ctx: Context,
+    loader: Rc<CustomModuleLoader>,
     reqwest_client: reqwest::Client,
     queue: Rc<Queue>,
     hooks: Rc<RuntimeHostHooks>,
@@ -153,6 +154,7 @@ impl RuntimeInternal {
 
         Ok(Self {
             ctx: context,
+            loader,
             reqwest_client,
             queue,
             hooks,
@@ -188,8 +190,10 @@ impl RuntimeInternal {
         );
 
         let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)?;
-        let source = source.as_ref();
         let ctx = &mut self.ctx;
+        let isolated_realm = ctx.create_realm()?;
+        let previous_realm = ctx.enter_realm(isolated_realm);
+        synthetic_modules::install_synthetic_modules(&self.loader, ctx);
 
         let runtime_limits = ctx.runtime_limits_mut();
         runtime_limits.set_loop_iteration_limit(self.execution_limits.max_loop_iterations);
@@ -199,6 +203,7 @@ impl RuntimeInternal {
         self.queue.set_deadline(Some(deadline));
         ctx.insert_data(state);
 
+        let source = source.as_ref();
         let source = Source::from_bytes(source);
         let result = (|| -> JsResult<JsValue> {
             let module = Module::parse(source, None, ctx)?;
@@ -251,6 +256,7 @@ impl RuntimeInternal {
         ctx.remove_data::<MechanicsState>();
         self.queue.set_deadline(None);
         self.hooks.clear();
+        ctx.enter_realm(previous_realm);
         result
     }
 

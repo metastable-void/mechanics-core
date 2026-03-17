@@ -24,6 +24,42 @@ fn run_simple_module_returns_value() {
 }
 
 #[test]
+fn global_mutations_do_not_persist_across_jobs() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let set_global = make_job(
+        r#"
+            export default function main(_arg) {
+                globalThis.__mechanics_cross_job_leak_test__ = "leak";
+                return null;
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    pool.run(set_global).expect("run first module");
+
+    let read_global = make_job(
+        r#"
+            export default function main(_arg) {
+                return Object.prototype.hasOwnProperty.call(
+                    globalThis,
+                    "__mechanics_cross_job_leak_test__"
+                );
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(read_global).expect("run second module");
+    assert_eq!(value, Value::Bool(false));
+}
+
+#[test]
 fn loop_iteration_limit_stops_infinite_loop() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,

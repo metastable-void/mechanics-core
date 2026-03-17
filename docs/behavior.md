@@ -24,8 +24,10 @@ The crate API is exported from `src/lib.rs`:
 - `MechanicsConfig::new(...)` validates endpoint configuration before returning.
 - `serde` deserialization into `MechanicsConfig` also validates and fails on invalid endpoint config.
 5. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
-6. The module default export is invoked with one argument.
-7. Result is converted to JSON and returned.
+6. Each job executes inside a fresh JavaScript Realm within that runtime context.
+7. Global mutations (for example `globalThis.foo = ...`) do not persist to later jobs.
+8. The module default export is invoked with one argument.
+9. Result is converted to JSON and returned.
 
 ## JavaScript contract
 Your module should export a callable default export.
@@ -38,6 +40,7 @@ export default function main(arg) {
 
 At runtime:
 - `default` export is resolved and invoked.
+- Job code runs in an isolated Realm created per job.
 - If return value is not a Promise, it is wrapped in a resolved Promise.
 - Job queue drains once after invocation.
 - If module evaluation Promise or default export Promise is still pending after queue drain, execution fails.
