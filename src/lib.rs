@@ -671,7 +671,7 @@ impl Default for MechanicsPoolConfig {
             queue_capacity: workers.saturating_mul(64).max(64),
             enqueue_timeout: Duration::from_millis(500),
             execution_limits: MechanicsExecutionLimits::default(),
-            default_http_timeout_ms: None,
+            default_http_timeout_ms: Some(120_000),
             restart_window: Duration::from_secs(10),
             max_restarts_in_window: 16,
         }
