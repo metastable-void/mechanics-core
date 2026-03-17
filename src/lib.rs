@@ -28,7 +28,7 @@ pub struct HttpEndpoint {
 }
 
 impl HttpEndpoint {
-    pub const USER_AGENT: &str = concat!("Mozilla/5.0 (compatible; mechanics/", env!("CARGO_PKG_VERSION"), ")");
+    const USER_AGENT: &str = concat!("Mozilla/5.0 (compatible; mechanics-rs/", env!("CARGO_PKG_VERSION"), ")");
 
     /// Constructs an endpoint definition used by runtime-owned HTTP helpers.
     pub fn new(url: &str, headers: HashMap<String, String>) -> Self {
@@ -39,13 +39,17 @@ impl HttpEndpoint {
         }
     }
 
+    /// Sets a per-endpoint timeout in milliseconds.
+    ///
+    /// If this is `Some`, it overrides the pool default endpoint timeout.
+    /// If this is `None`, the pool default timeout is used.
     pub fn with_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.timeout_ms = timeout_ms;
         self
     }
 
     /// Sends a JSON POST request and deserializes the JSON response into `Res`.
-    pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(
+    pub(crate) async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(
         &self,
         client: reqwest::Client,
         default_timeout_ms: Option<u64>,
@@ -325,10 +329,14 @@ impl ModuleLoader for CustomModuleLoader {
     }
 }
 
+/// One script execution request submitted to [`MechanicsPool`].
 #[derive(Debug, Clone)]
 pub struct MechanicsJob {
+    /// ECMAScript module source containing a `default` export callable.
     pub mod_source: Arc<str>,
+    /// JSON argument passed to the script's default export.
     pub arg: Arc<Value>,
+    /// Runtime configuration used for resolving `mechanics:endpoint` calls.
     pub config: Arc<MechanicsConfig>,
 }
 
@@ -366,11 +374,16 @@ impl MechanicsState {
     }
 }
 
+/// Per-job execution limits enforced by runtime workers.
 #[derive(Debug, Clone, Copy)]
 pub struct MechanicsExecutionLimits {
+    /// Maximum wall-clock time allowed for one script execution.
     pub max_execution_time: Duration,
+    /// Maximum loop iterations before the VM throws a runtime limit error.
     pub max_loop_iterations: u64,
+    /// Maximum JS recursion depth before the VM throws a runtime limit error.
     pub max_recursion_depth: usize,
+    /// Maximum VM stack size before the VM throws a runtime limit error.
     pub max_stack_size: usize,
 }
 
@@ -385,51 +398,69 @@ impl Default for MechanicsExecutionLimits {
     }
 }
 
+/// Error type used across script execution and pool operations.
 #[derive(Debug, Clone)]
 pub enum MechanicsError {
+    /// Script execution failed.
     Execution(Cow<'static, str>),
+    /// Submission failed because the pool queue is full.
     QueueFull(Cow<'static, str>),
+    /// Submission failed because enqueue timed out.
     QueueTimeout(Cow<'static, str>),
+    /// Submission failed because the pool is closed.
     PoolClosed(Cow<'static, str>),
+    /// Submission or result retrieval failed because no worker is available.
     WorkerUnavailable(Cow<'static, str>),
+    /// Work item was canceled before execution.
     Canceled(Cow<'static, str>),
+    /// Worker panicked while running a job.
     Panic(Cow<'static, str>),
+    /// Pool setup or lifecycle management failed.
     RuntimePool(Cow<'static, str>),
 }
 
 impl MechanicsError {
+    /// Builds an execution error.
     pub fn execution<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::Execution(msg.into())
     }
 
+    /// Builds a pool/runtime lifecycle error.
     pub fn runtime_pool<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::RuntimePool(msg.into())
     }
 
+    /// Builds a queue-full error.
     pub fn queue_full<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::QueueFull(msg.into())
     }
 
+    /// Builds a queue-timeout error.
     pub fn queue_timeout<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::QueueTimeout(msg.into())
     }
 
+    /// Builds a pool-closed error.
     pub fn pool_closed<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::PoolClosed(msg.into())
     }
 
+    /// Builds a worker-unavailable error.
     pub fn worker_unavailable<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::WorkerUnavailable(msg.into())
     }
 
+    /// Builds a cancellation error.
     pub fn canceled<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::Canceled(msg.into())
     }
 
+    /// Builds a worker panic error.
     pub fn panic<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::Panic(msg.into())
     }
 
+    /// Returns the raw error message.
     pub fn msg(&self) -> &str {
         match self {
             Self::Execution(msg) => msg.as_ref(),
@@ -443,6 +474,7 @@ impl MechanicsError {
         }
     }
 
+    /// Returns the symbolic error kind name.
     pub fn kind(&self) -> &'static str {
         match &self {
             Self::Execution(_) => "MechanicsError::Execution",
@@ -608,14 +640,24 @@ impl RuntimeInternal {
     }
 }
 
+/// Configuration for constructing a [`MechanicsPool`].
 #[derive(Debug, Clone)]
 pub struct MechanicsPoolConfig {
+    /// Number of worker threads in the pool.
     pub worker_count: usize,
+    /// Maximum number of enqueued jobs waiting to run.
     pub queue_capacity: usize,
+    /// Maximum time to wait while enqueueing in [`MechanicsPool::run`].
     pub enqueue_timeout: Duration,
+    /// Script execution limits applied to every job.
     pub execution_limits: MechanicsExecutionLimits,
+    /// Default timeout in milliseconds for endpoint HTTP calls.
+    ///
+    /// Per-endpoint timeout set via [`HttpEndpoint::with_timeout_ms`] overrides this value.
     pub default_http_timeout_ms: Option<u64>,
+    /// Sliding window duration used by worker restart rate limiting.
     pub restart_window: Duration,
+    /// Maximum automatic worker restarts allowed within `restart_window`.
     pub max_restarts_in_window: usize,
 }
 
@@ -769,6 +811,7 @@ impl MechanicsPoolShared {
     }
 }
 
+/// Thread pool of script runtimes for executing [`MechanicsJob`] workloads.
 pub struct MechanicsPool {
     shared: Arc<MechanicsPoolShared>,
     enqueue_timeout: Duration,
@@ -776,6 +819,7 @@ pub struct MechanicsPool {
 }
 
 impl MechanicsPool {
+    /// Creates a new mechanics runtime pool.
     pub fn new(config: MechanicsPoolConfig) -> Result<Self, MechanicsError> {
         if config.worker_count == 0 {
             return Err(MechanicsError::runtime_pool("worker_count must be > 0"));
@@ -869,6 +913,7 @@ impl MechanicsPool {
         })
     }
 
+    /// Enqueues a job and blocks until the script finishes or fails.
     pub fn run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
@@ -916,6 +961,7 @@ impl MechanicsPool {
         }
     }
 
+    /// Attempts to enqueue a job without waiting for queue space.
     pub fn try_run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
