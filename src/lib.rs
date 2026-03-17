@@ -5,12 +5,11 @@ use boa_engine::{
 use boa_gc::Finalize;
 use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
-use parking_lot::RwLock;
 use reqwest::header::{HeaderMap, HeaderName};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use tokio::task;
-use std::{collections::{BTreeMap, HashMap, VecDeque}, cell::RefCell, rc::Rc, sync::{Arc, Mutex}};
+use std::{borrow::Cow, cell::RefCell, collections::{BTreeMap, HashMap, VecDeque}, rc::Rc};
 use std::ops::DerefMut;
 
 /// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
@@ -19,7 +18,7 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
 }
 
 /// HTTP endpoint configuration used by the runtime-provided JS helper.
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone)]
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
 pub struct HttpEndpoint {
     url: String,
     headers: HashMap<String, String>,
@@ -62,20 +61,20 @@ impl HttpEndpoint {
 
 /// Job queues backing Boa's executor integration.
 pub(crate) struct Queue {
-    async_jobs: Arc<RwLock<VecDeque<NativeAsyncJob>>>,
-    promise_jobs: Arc<RwLock<VecDeque<PromiseJob>>>,
-    timeout_jobs: Arc<RwLock<BTreeMap<JsInstant, TimeoutJob>>>,
-    generic_jobs: Arc<RwLock<VecDeque<GenericJob>>>,
+    async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
+    promise_jobs: RefCell<VecDeque<PromiseJob>>,
+    timeout_jobs: RefCell<BTreeMap<JsInstant, TimeoutJob>>,
+    generic_jobs: RefCell<VecDeque<GenericJob>>,
 }
 
 impl Queue {
     /// Creates an empty job queue backing Boa's executor hooks.
     pub(crate) fn new() -> Self {
         Self {
-            async_jobs: Arc::new(RwLock::default()),
-            promise_jobs: Arc::new(RwLock::default()),
-            timeout_jobs: Arc::new(RwLock::default()),
-            generic_jobs: Arc::new(RwLock::default()),
+            async_jobs: RefCell::default(),
+            promise_jobs: RefCell::default(),
+            timeout_jobs: RefCell::default(),
+            generic_jobs: RefCell::default(),
         }
     }
 
@@ -83,7 +82,7 @@ impl Queue {
     fn drain_timeout_jobs(&self, context: &mut Context) {
         let now = context.clock().now();
 
-        let mut timeouts_borrow = self.timeout_jobs.write();
+        let mut timeouts_borrow = self.timeout_jobs.borrow_mut();
         let mut jobs_to_keep = timeouts_borrow.split_off(&now);
         jobs_to_keep.retain(|_, job| !job.is_cancelled());
         let jobs_to_run = std::mem::replace(timeouts_borrow.deref_mut(), jobs_to_keep);
@@ -100,14 +99,14 @@ impl Queue {
     fn drain_jobs(&self, context: &mut Context) {
         self.drain_timeout_jobs(context);
 
-        let job = self.generic_jobs.write().pop_front();
+        let job = self.generic_jobs.borrow_mut().pop_front();
         if let Some(generic) = job
             && let Err(err) = generic.call(context)
         {
             eprintln!("Uncaught {err}");
         }
 
-        let jobs = std::mem::take(&mut *self.promise_jobs.write());
+        let jobs = std::mem::take(&mut *self.promise_jobs.borrow_mut());
         for job in jobs {
             if let Err(e) = job.call(context) {
                 eprintln!("Uncaught {e}");
@@ -121,13 +120,13 @@ impl JobExecutor for Queue {
     /// Routes jobs to their corresponding internal queues.
     fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
         match job {
-            Job::PromiseJob(job) => self.promise_jobs.write().push_back(job),
-            Job::AsyncJob(job) => self.async_jobs.write().push_back(job),
+            Job::PromiseJob(job) => self.promise_jobs.borrow_mut().push_back(job),
+            Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
             Job::TimeoutJob(t) => {
                 let now = context.clock().now();
-                self.timeout_jobs.write().insert(now + t.timeout(), t);
+                self.timeout_jobs.borrow_mut().insert(now + t.timeout(), t);
             }
-            Job::GenericJob(g) => self.generic_jobs.write().push_back(g),
+            Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
             _ => panic!("unsupported job type"),
         }
     }
@@ -146,14 +145,14 @@ impl JobExecutor for Queue {
     async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
         let mut group = FutureGroup::new();
         loop {
-            for job in std::mem::take(&mut *self.async_jobs.write()) {
+            for job in std::mem::take(&mut *self.async_jobs.borrow_mut()) {
                 group.insert(job.call(context));
             }
 
             if group.is_empty()
-                && self.promise_jobs.read().is_empty()
-                && self.timeout_jobs.read().is_empty()
-                && self.generic_jobs.read().is_empty()
+                && self.promise_jobs.borrow().is_empty()
+                && self.timeout_jobs.borrow().is_empty()
+                && self.generic_jobs.borrow().is_empty()
             {
                 return Ok(());
             }
@@ -169,12 +168,12 @@ impl JobExecutor for Queue {
 }
 
 /// Serializable runtime data injected into the JS context.
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone)]
-pub struct RuntimeState {
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
+pub struct MechanicsConfig {
     endpoints: HashMap<String, HttpEndpoint>,
 }
 
-impl RuntimeState {
+impl MechanicsConfig {
     /// Builds runtime state from endpoint definitions.
     pub fn new(endpoints: HashMap<String, HttpEndpoint>) -> Self {
         Self {
@@ -217,14 +216,21 @@ impl ModuleLoader for CustomModuleLoader {
     }
 }
 
-/// Script runtime that hosts a Boa context and exposes helper modules.
-pub struct Runtime {
-    ctx: Arc<Mutex<Context>>,
+#[derive(Debug, Clone)]
+pub struct MechanicsJob<'a> {
+    pub mod_source: Cow<'a, str>,
+    pub arg: Value,
+    pub config: MechanicsConfig,
 }
 
-impl Runtime {
+/// Script runtime that hosts a Boa context and exposes helper modules.
+pub struct RuntimeInternal {
+    ctx: Context,
+}
+
+impl RuntimeInternal {
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
-    pub fn new(state: RuntimeState) -> Self {
+    pub fn new() -> Self {
         let queue = Queue::new();
 
         let loader = Rc::new(CustomModuleLoader::new());
@@ -234,7 +240,6 @@ impl Runtime {
             .build()
             .unwrap();
 
-        context.insert_data(state);
         let endpoint = FunctionObjectBuilder::new(
             context.realm(),
             NativeFunction::from_async_fn(async |_, args, ctx| {
@@ -244,7 +249,7 @@ impl Runtime {
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("JSON error")))?;
                 
                 let ctx_ref = ctx.borrow();
-                let state = ctx_ref.get_data::<RuntimeState>().cloned()
+                let state = ctx_ref.get_data::<MechanicsConfig>().cloned()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Invalid state")))?;
                 
                 drop(ctx_ref);
@@ -272,16 +277,23 @@ impl Runtime {
         loader.define_module(js_string!("mechanics:endpoint"), module);
 
         Self {
-            ctx: Arc::new(Mutex::new(context)),
+            ctx: context,
         }
     }
 
     /// Parses and evaluates a module, invokes its default export, and returns the JS result.
-    pub(crate) fn run_source_inner<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> JsResult<JsValue> {
+    pub(crate) fn run_source_inner(&mut self, job: MechanicsJob) -> JsResult<JsValue> {
+        let arg = job.arg;
+        let config = job.config;
+        let source = job.mod_source;
+
         let arg = serde_json::to_value(arg)
             .map_err(JsError::from_rust)?;
         let source = source.as_ref();
-        let mut ctx = self.ctx.lock().unwrap();
+        let mut ctx = &mut self.ctx;
+        
+        ctx.insert_data(config);
+
         let source = Source::from_bytes(source);
         let module = Module::parse(source, None, &mut ctx)?;
         let _ = module.load_link_evaluate(&mut ctx);
@@ -297,6 +309,8 @@ impl Runtime {
 
         ctx.run_jobs()?;
 
+        ctx.remove_data::<MechanicsConfig>();
+
         match res.state() {
             PromiseState::Fulfilled(v) => Ok(v),
             PromiseState::Pending => Ok(res.into()),
@@ -305,10 +319,10 @@ impl Runtime {
     }
 
     /// Runs source and converts the resulting JS value into `serde_json::Value`.
-    pub fn run_source<S: AsRef<str>, V: Serialize>(&self, source: S, arg: V) -> Result<Value, String> {
-        match self.run_source_inner(source, arg) {
+    pub fn run_source(&mut self, job: MechanicsJob) -> Result<Value, String> {
+        match self.run_source_inner(job) {
             Ok(data) => {
-                let mut ctx = self.ctx.lock().unwrap();
+                let mut ctx = &mut self.ctx;
                 match data.to_json(&mut ctx) {
                     Ok(d) => Ok(d.unwrap_or(Value::Null)),
                     _ => Ok(Value::Null),
