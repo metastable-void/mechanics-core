@@ -198,3 +198,40 @@ fn endpoint_json_request_type_rejects_bytes_body() {
         other => panic!("unexpected error kind: {other}"),
     }
 }
+
+#[test]
+fn endpoint_rejects_non_allowlisted_header_override() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let endpoint = HttpEndpoint::new(
+        HttpMethod::Post,
+        "https://example.com/anything",
+        HashMap::new(),
+    )
+    .with_overridable_request_headers(vec!["x-allowed".to_owned()]);
+    let config = endpoint_config("ep", endpoint);
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", {
+                    headers: { "x-not-allowed": "blocked" },
+                    body: { x: 1 }
+                });
+            }
+        "#;
+    let job = make_job(source, config, Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("non-allowlisted override header should fail");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("not allowlisted"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}

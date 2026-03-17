@@ -164,6 +164,10 @@ pub struct HttpEndpoint {
     #[serde(default)]
     headers: HashMap<String, String>,
     #[serde(default)]
+    overridable_request_headers: Vec<String>,
+    #[serde(default)]
+    exposed_response_headers: Vec<String>,
+    #[serde(default)]
     request_body_type: Option<EndpointBodyType>,
     #[serde(default)]
     response_body_type: EndpointBodyType,
@@ -189,6 +193,8 @@ impl HttpEndpoint {
             url_param_specs: HashMap::new(),
             query_specs: Vec::new(),
             headers,
+            overridable_request_headers: Vec::new(),
+            exposed_response_headers: Vec::new(),
             request_body_type: None,
             response_body_type: EndpointBodyType::Json,
             response_max_bytes: None,
@@ -214,6 +220,22 @@ impl HttpEndpoint {
     /// If unset, request body mode defaults to JSON.
     pub fn with_request_body_type(mut self, body_type: EndpointBodyType) -> Self {
         self.request_body_type = Some(body_type);
+        self
+    }
+
+    /// Sets request header names that JS may override via `endpoint(..., { headers })`.
+    ///
+    /// Matching is case-insensitive.
+    pub fn with_overridable_request_headers(mut self, headers: Vec<String>) -> Self {
+        self.overridable_request_headers = headers;
+        self
+    }
+
+    /// Sets response header names that are exposed to JS in endpoint response objects.
+    ///
+    /// Matching is case-insensitive.
+    pub fn with_exposed_response_headers(mut self, headers: Vec<String>) -> Self {
+        self.exposed_response_headers = headers;
         self
     }
 
@@ -252,6 +274,12 @@ impl HttpEndpoint {
     }
 
     pub(crate) fn validate_config(&self) -> std::io::Result<()> {
+        validate_header_name_list(
+            &self.overridable_request_headers,
+            "overridable_request_headers",
+        )?;
+        validate_header_name_list(&self.exposed_response_headers, "exposed_response_headers")?;
+
         let (chunks, slot_names) = parse_url_template(&self.url_template)?;
         let slot_set: HashSet<&str> = slot_names.iter().map(String::as_str).collect();
 
@@ -328,7 +356,11 @@ impl HttpEndpoint {
             .unwrap_or(EndpointBodyType::Json)
     }
 
-    fn build_headers(&self, default_content_type: Option<&str>) -> std::io::Result<HeaderMap> {
+    fn build_headers(
+        &self,
+        default_content_type: Option<&str>,
+        options: &EndpointCallOptions,
+    ) -> std::io::Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
             let name = HeaderName::try_from(k.as_str()).map_err(|e| {
@@ -366,6 +398,34 @@ impl HttpEndpoint {
                 )
             })?;
             headers.insert(CONTENT_TYPE, content_type);
+        }
+
+        let allowed_overrides = allowlisted_header_names(
+            &self.overridable_request_headers,
+            "overridable_request_headers",
+        )?;
+        for (k, v) in &options.headers {
+            let name = HeaderName::try_from(k.as_str()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid override header name `{k}`: {e}"),
+                )
+            })?;
+            if !allowed_overrides.contains(&name) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "override header `{k}` is not allowlisted in overridable_request_headers"
+                    ),
+                ));
+            }
+            let value = HeaderValue::try_from(v.as_str()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid override header value for `{k}`: {e}"),
+                )
+            })?;
+            headers.insert(name, value);
         }
 
         Ok(headers)
@@ -508,7 +568,7 @@ impl HttpEndpoint {
         default_timeout_ms: Option<u64>,
         default_response_max_bytes: Option<usize>,
         options: &EndpointCallOptions,
-    ) -> std::io::Result<EndpointResponseBody> {
+    ) -> std::io::Result<EndpointResponse> {
         let url = self.build_url(options)?;
         let timeout_ms = self.timeout_ms.or(default_timeout_ms);
         let response_max_bytes = self.response_max_bytes.or(default_response_max_bytes);
@@ -526,7 +586,7 @@ impl HttpEndpoint {
                 None
             };
 
-        let headers = self.build_headers(default_content_type)?;
+        let headers = self.build_headers(default_content_type, options)?;
         let mut req = client
             .request(self.method.as_reqwest_method(), url)
             .headers(headers);
@@ -585,6 +645,8 @@ impl HttpEndpoint {
         } else {
             res.error_for_status().map_err(into_io_error)?
         };
+        let response_headers =
+            extract_exposed_response_headers(res.headers(), &self.exposed_response_headers)?;
 
         if let (Some(max), Some(content_len)) = (response_max_bytes, res.content_length())
             && content_len > max as u64
@@ -603,23 +665,83 @@ impl HttpEndpoint {
             extend_body_with_limit(&mut bytes, &chunk, response_max_bytes)?;
         }
         if bytes.is_empty() {
-            return Ok(EndpointResponseBody::Empty);
+            return Ok(EndpointResponse {
+                body: EndpointResponseBody::Empty,
+                headers: response_headers,
+            });
         }
 
-        match self.response_body_type.clone() {
+        let body = match self.response_body_type.clone() {
             EndpointBodyType::Json => {
                 let data = serde_json::from_slice::<Value>(&bytes).map_err(into_io_error)?;
-                Ok(EndpointResponseBody::Json(data))
+                EndpointResponseBody::Json(data)
             }
             EndpointBodyType::Utf8 => {
                 let data = std::str::from_utf8(&bytes)
                     .map_err(into_io_error)?
                     .to_owned();
-                Ok(EndpointResponseBody::Utf8(data))
+                EndpointResponseBody::Utf8(data)
             }
-            EndpointBodyType::Bytes => Ok(EndpointResponseBody::Bytes(bytes)),
+            EndpointBodyType::Bytes => EndpointResponseBody::Bytes(bytes),
+        };
+
+        Ok(EndpointResponse {
+            body,
+            headers: response_headers,
+        })
+    }
+}
+
+fn validate_header_name_list(headers: &[String], field_name: &str) -> std::io::Result<()> {
+    for header in headers {
+        HeaderName::try_from(header.as_str()).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("invalid header name `{header}` in `{field_name}`: {e}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn allowlisted_header_names(
+    headers: &[String],
+    field_name: &str,
+) -> std::io::Result<HashSet<HeaderName>> {
+    headers
+        .iter()
+        .map(|header| {
+            HeaderName::try_from(header.as_str()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid header name `{header}` in `{field_name}`: {e}"),
+                )
+            })
+        })
+        .collect()
+}
+
+fn extract_exposed_response_headers(
+    headers: &HeaderMap,
+    allowlist: &[String],
+) -> std::io::Result<HashMap<String, String>> {
+    let allowlisted = allowlisted_header_names(allowlist, "exposed_response_headers")?;
+    let mut out = HashMap::new();
+    for name in allowlisted {
+        let values = headers.get_all(&name);
+        let mut parts = Vec::new();
+        for value in values {
+            let text = value
+                .to_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|_| String::from_utf8_lossy(value.as_bytes()).into_owned());
+            parts.push(text);
+        }
+        if !parts.is_empty() {
+            out.insert(name.as_str().to_ascii_lowercase(), parts.join(", "));
         }
     }
+    Ok(out)
 }
 
 fn extend_body_with_limit(
@@ -865,6 +987,7 @@ fn percent_encode_component(input: &str) -> String {
 pub(crate) struct EndpointCallOptions {
     pub(crate) url_params: HashMap<String, String>,
     pub(crate) queries: HashMap<String, String>,
+    pub(crate) headers: HashMap<String, String>,
     #[serde(skip)]
     pub(crate) body: EndpointCallBody,
 }
@@ -908,6 +1031,12 @@ pub(crate) enum EndpointResponseBody {
     Utf8(String),
     Bytes(Vec<u8>),
     Empty,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct EndpointResponse {
+    pub(crate) body: EndpointResponseBody,
+    pub(crate) headers: HashMap<String, String>,
 }
 
 /// Serializable runtime data injected into the JS context.

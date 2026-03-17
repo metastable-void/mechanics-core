@@ -1,7 +1,10 @@
 use super::{MechanicsState, buffer_like};
 use crate::{
     executor::CustomModuleLoader,
-    http::{EndpointCallBody, EndpointCallOptions, EndpointResponseBody, into_io_error},
+    http::{
+        EndpointCallBody, EndpointCallOptions, EndpointResponse, EndpointResponseBody,
+        into_io_error,
+    },
 };
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, JsResult, JsString, JsValue, Module, NativeFunction,
@@ -82,6 +85,7 @@ fn parse_endpoint_call_options_js(
     let url_params =
         parse_string_map_field(&options, js_string!("urlParams"), "urlParams", context)?;
     let queries = parse_string_map_field(&options, js_string!("queries"), "queries", context)?;
+    let headers = parse_string_map_field(&options, js_string!("headers"), "headers", context)?;
     let body_value = options.get(js_string!("body"), context)?;
     let body = if body_value.is_undefined() || body_value.is_null() {
         EndpointCallBody::Absent
@@ -99,22 +103,37 @@ fn parse_endpoint_call_options_js(
     Ok(EndpointCallOptions {
         url_params,
         queries,
+        headers,
         body,
     })
 }
 
 fn endpoint_response_to_js_value(
-    response: EndpointResponseBody,
+    response: EndpointResponse,
     context: &mut Context,
 ) -> JsResult<JsValue> {
-    match response {
+    let body = match response.body {
         EndpointResponseBody::Json(v) => JsValue::from_json(&v, context),
         EndpointResponseBody::Utf8(s) => Ok(buffer_like::js_string_value(&s)),
         EndpointResponseBody::Bytes(bytes) => {
             buffer_like::bytes_to_uint8_array_value(&bytes, context)
         }
         EndpointResponseBody::Empty => Ok(JsValue::null()),
-    }
+    }?;
+
+    let headers_value = Value::Object(
+        response
+            .headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::String(v)))
+            .collect(),
+    );
+    let headers = JsValue::from_json(&headers_value, context)?;
+
+    let object = JsObject::default(context.intrinsics());
+    object.set(js_string!("body"), body, true, context)?;
+    object.set(js_string!("headers"), headers, true, context)?;
+    Ok(object.into())
 }
 
 fn parse_form_record_arg(

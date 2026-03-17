@@ -8,8 +8,8 @@ Audit pass covered:
 
 Validation run:
 - `cargo clippy --all-targets --all-features` (pass).
-- `cargo test --all-targets` (pass: 48 passed, 0 failed, 19 ignored).
-- `cargo test --all-targets -- --ignored` (pass: 19 passed, 0 failed; run outside sandbox restrictions).
+- `cargo test --all-targets` (pass: 53 passed, 0 failed, 20 ignored).
+- `cargo test --all-targets -- --ignored` (pass: 20 passed, 0 failed; run outside sandbox restrictions).
 
 ## Current findings
 

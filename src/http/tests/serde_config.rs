@@ -57,3 +57,19 @@ fn mechanics_config_deserialize_rejects_invalid_endpoint_configuration() {
             .contains("missing url_param_specs entry for slot `id`")
     );
 }
+
+#[test]
+fn mechanics_config_rejects_invalid_header_allowlist_name() {
+    let endpoint: HttpEndpoint = serde_json::from_value(json!({
+        "method": "post",
+        "url_template": "https://example.com/{id}",
+        "url_param_specs": { "id": {} },
+        "overridable_request_headers": ["bad header"]
+    }))
+    .expect("endpoint itself should deserialize");
+
+    let mut endpoints = HashMap::new();
+    endpoints.insert("bad".to_owned(), endpoint);
+    let err = MechanicsConfig::new(endpoints).expect_err("config should fail fast");
+    assert!(err.msg().contains("invalid header name `bad header`"));
+}

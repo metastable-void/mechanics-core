@@ -52,11 +52,13 @@ Runtime registers a synthetic module named `mechanics:endpoint` with default exp
 import endpoint from "mechanics:endpoint";
 
 export default async function main(arg) {
-  return await endpoint("primary", {
+  const res = await endpoint("primary", {
     urlParams: { user_id: "u-123" },
     queries: { page: "1", filter: "active" },
+    headers: { "x-request-id": "req-1" },
     body: arg
   });
+  return res.body;
 }
 ```
 
@@ -70,8 +72,11 @@ Resolution behavior:
 - Request body serialization uses endpoint `request_body_type`.
 - Response body parsing uses endpoint `response_body_type`.
 - Response body size is bounded by endpoint `response_max_bytes` if set, otherwise by pool default `default_http_response_max_bytes`.
-- Empty response bodies are always returned to JS as `null`.
+- Empty response bodies are represented as `response.body = null`.
+- Endpoint result is always an object: `{ body, headers }`.
+- `headers` includes only names allowlisted by endpoint `exposed_response_headers` (keys are lowercase).
 - Configured headers are validated; invalid names/values fail the call.
+- JS `options.headers` can override only names allowlisted by endpoint `overridable_request_headers` (case-insensitive).
 - If missing, `User-Agent` is injected automatically.
 - If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
@@ -80,6 +85,7 @@ Resolution behavior:
 `endpoint(name, options)` payload shape (camelCase):
 - `urlParams`: object of string slot values for URL template substitution.
 - `queries`: object of string slot values used by configured slotted query specs.
+- `headers`: object of string request header overrides (must be allowlisted per endpoint).
 - `body`: optional payload value.
 - accepted request input types depend on endpoint `request_body_type`:
 - `json`: any JSON-convertible JS value.
@@ -93,6 +99,8 @@ Config shape is JSON-friendly and snake_case (`serde`):
 - `request_body_type`: `"json" | "utf8" | "bytes"` (method defaults apply).
 - `response_body_type`: `"json" | "utf8" | "bytes"` (default `"json"`).
 - `response_max_bytes`: optional max response-body size in bytes (`null` means use pool default).
+- `overridable_request_headers`: optional list of request header names that JS may override with `options.headers` (case-insensitive).
+- `exposed_response_headers`: optional list of response header names exposed on endpoint result `headers` (case-insensitive).
 - `url_template` is a full URL template string and placeholder names must be unique.
 - placeholder/slot names are limited to ASCII letters, digits, and `_`.
 - `url_param_specs` maps placeholder names to constraints and optional defaults.
@@ -157,6 +165,8 @@ Minimal endpoint config example (JSON):
       "request_body_type": "json",
       "response_body_type": "json",
       "response_max_bytes": 1048576,
+      "overridable_request_headers": ["x-request-id"],
+      "exposed_response_headers": ["content-type", "x-trace-id"],
       "timeout_ms": 5000,
       "allow_non_success_status": false
     }
@@ -297,7 +307,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r#"
             import endpoint from \"mechanics:endpoint\";
             export default async function main(arg) {
-                return await endpoint(\"primary\", { body: arg });
+                const res = await endpoint(\"primary\", { body: arg });
+                return res.body;
             }
             "#,
         ),
@@ -321,7 +332,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `mechanics:rand`
 - Results must be JSON-convertible to be returned successfully.
 - Queue cancellation is best-effort; jobs already executing continue until runtime completion/limits.
-- `mechanics:endpoint` may return JSON, UTF-8 string, bytes (`Uint8Array`), or `null` (empty body) based on endpoint configuration.
+- `mechanics:endpoint` returns `{ body, headers }`; `body` may be JSON, UTF-8 string, bytes (`Uint8Array`), or `null` (empty body) based on endpoint configuration.
 - URL/query value sources are constrained to configured slots (no arbitrary URL/method/header override from JS).
 - This crate currently does not include persistent module caching (source is parsed per job).
 

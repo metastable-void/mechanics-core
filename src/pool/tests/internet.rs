@@ -31,7 +31,7 @@ fn internet_endpoint_roundtrip_httpbin() {
     };
     let value = result.expect("internet endpoint call should succeed");
 
-    assert_eq!(value["json"]["hello"], json!("internet"));
+    assert_eq!(value["body"]["json"]["hello"], json!("internet"));
 }
 
 #[test]
@@ -115,11 +115,12 @@ fn internet_endpoint_timeout_overrides_pool_default() {
         return;
     };
     let value = result.expect("endpoint-level timeout should allow success");
-    let echoed_json = value
+    let body = &value["body"];
+    let echoed_json = body
         .get("json")
         .and_then(|v| v.get("hello"))
         .and_then(Value::as_str);
-    let echoed_data = value.get("data").and_then(Value::as_str);
+    let echoed_data = body.get("data").and_then(Value::as_str);
     let json_ok = echoed_json == Some("override");
     let data_ok = echoed_data
         .map(|s| s.contains("\"hello\":\"override\"") || s.contains("\"hello\": \"override\""))
@@ -135,7 +136,8 @@ fn internet_endpoint_timeout_overrides_pool_default() {
 fn internet_endpoint_sends_custom_headers() {
     let mut headers = HashMap::new();
     headers.insert("X-Mechanics-Test".to_owned(), "header-check".to_owned());
-    let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://httpbin.org/anything", headers);
+    let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://httpbin.org/anything", headers)
+        .with_exposed_response_headers(vec!["content-type".to_owned()]);
     let config = endpoint_config("internet", endpoint);
 
     let pool = MechanicsPool::new(MechanicsPoolConfig {
@@ -163,8 +165,62 @@ fn internet_endpoint_sends_custom_headers() {
     };
     let value = result.expect("internet endpoint call should succeed");
 
-    assert_eq!(value["json"]["hello"], json!("headers"));
-    assert_eq!(value["headers"]["X-Mechanics-Test"], json!("header-check"));
+    assert_eq!(value["body"]["json"]["hello"], json!("headers"));
+    assert_eq!(
+        value["body"]["headers"]["X-Mechanics-Test"],
+        json!("header-check")
+    );
+    assert!(
+        value["headers"]["content-type"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("application/json")
+    );
+}
+
+#[test]
+#[ignore = "requires internet access to https://httpbin.org"]
+fn internet_endpoint_allows_allowlisted_request_header_override() {
+    let endpoint = HttpEndpoint::new(
+        HttpMethod::Get,
+        "https://httpbin.org/anything",
+        HashMap::new(),
+    )
+    .with_overridable_request_headers(vec!["x-mechanics-override".to_owned()]);
+    let config = endpoint_config("internet", endpoint);
+
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        default_http_timeout_ms: Some(10_000),
+        execution_limits: MechanicsExecutionLimits {
+            max_execution_time: Duration::from_secs(15),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("internet", {
+                    headers: { "X-Mechanics-Override": "yes" }
+                });
+            }
+        "#;
+    let job = make_job(source, config, Value::Null);
+    let Some(result) = run_internet_job_with_retry(
+        &pool,
+        &job,
+        "internet_endpoint_allows_allowlisted_request_header_override",
+    ) else {
+        return;
+    };
+    let value = result.expect("internet endpoint call should succeed");
+    assert_eq!(
+        value["body"]["headers"]["X-Mechanics-Override"],
+        json!("yes")
+    );
 }
 
 #[test]
@@ -228,10 +284,11 @@ fn internet_endpoint_get_uses_url_and_query_slots() {
         return;
     };
     let value = result.expect("internet endpoint call should succeed");
-    assert_eq!(value["method"], json!("GET"));
-    assert_eq!(value["args"]["v"], json!("1"));
-    assert_eq!(value["args"]["q"], json!("slot-ok"));
-    let url = value["url"].as_str().unwrap_or_default();
+    let body = &value["body"];
+    assert_eq!(body["method"], json!("GET"));
+    assert_eq!(body["args"]["v"], json!("1"));
+    assert_eq!(body["args"]["q"], json!("slot-ok"));
+    let url = body["url"].as_str().unwrap_or_default();
     assert!(url.contains("/anything/abc_123"));
 }
 
@@ -270,8 +327,8 @@ fn internet_endpoint_put_utf8_request_roundtrip() {
         return;
     };
     let value = result.expect("internet endpoint call should succeed");
-    assert_eq!(value["method"], json!("PUT"));
-    let echoed = value["data"].as_str().unwrap_or_default();
+    assert_eq!(value["body"]["method"], json!("PUT"));
+    let echoed = value["body"]["data"].as_str().unwrap_or_default();
     assert!(echoed.contains("hello-put"));
 }
 
@@ -317,14 +374,14 @@ fn internet_endpoint_delete_roundtrip() {
         return;
     };
     let value = result.expect("internet endpoint call should succeed");
-    if value.is_null() {
+    if value["body"].is_null() {
         eprintln!(
             "skipping internet_endpoint_delete_roundtrip: upstream returned empty response body"
         );
         return;
     }
-    assert_eq!(value["method"], json!("DELETE"));
-    assert_eq!(value["args"]["tag"], json!("gone"));
+    assert_eq!(value["body"]["method"], json!("DELETE"));
+    assert_eq!(value["body"]["args"]["tag"], json!("gone"));
 }
 
 #[test]
@@ -352,7 +409,7 @@ fn internet_endpoint_utf8_response_body_mode() {
     let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(_arg) {
-                return await endpoint("internet");
+                return (await endpoint("internet")).body;
             }
         "#;
     let job = make_job(source, config, Value::Null);
@@ -391,7 +448,7 @@ fn internet_endpoint_bytes_response_body_mode() {
     let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(_arg) {
-                const bytes = await endpoint("internet");
+                const bytes = (await endpoint("internet")).body;
                 return Array.from(bytes);
             }
         "#;
@@ -440,7 +497,7 @@ fn internet_endpoint_empty_response_is_null() {
     let source = r#"
             import endpoint from "mechanics:endpoint";
             export default async function main(_arg) {
-                return await endpoint("internet");
+                return (await endpoint("internet")).body;
             }
         "#;
     let job = make_job(source, config, Value::Null);

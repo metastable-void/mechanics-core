@@ -106,7 +106,7 @@ fn endpoint_specific_timeout_overrides_pool_default() {
     let value = pool
         .run(job)
         .expect("endpoint-level timeout should allow success");
-    assert_eq!(value["ok"], json!(true));
+    assert_eq!(value["body"]["ok"], json!(true));
 
     let _ = server.join();
 }
@@ -180,7 +180,7 @@ fn endpoint_response_max_bytes_overrides_pool_default() {
     let value = pool
         .run(job)
         .expect("endpoint-level response max bytes should allow success");
-    assert_eq!(value["blob"].as_str().map(str::len), Some(128));
+    assert_eq!(value["body"]["blob"].as_str().map(str::len), Some(128));
 
     let _ = server.join();
 }
@@ -252,7 +252,7 @@ fn endpoint_non_success_status_can_be_allowed() {
     let value = pool
         .run(job)
         .expect("opt-in should allow JSON parse on non-success status");
-    assert_eq!(value["ok"], json!(false));
+    assert_eq!(value["body"]["ok"], json!(false));
 
     let _ = server.join();
 }
