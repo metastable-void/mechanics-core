@@ -3,15 +3,16 @@ use boa_engine::{
 };
 
 use boa_gc::Finalize;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, SendTimeoutError, TryRecvError, TrySendError, bounded};
 use futures_concurrency::future::FutureGroup;
 use futures_lite::{StreamExt, future};
 use reqwest::header::{HeaderMap, HeaderName};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use tokio::task;
-use std::{borrow::Cow, cell::RefCell, collections::{BTreeMap, HashMap, VecDeque}, fmt::Display, rc::Rc, sync::Arc};
+use std::{borrow::Cow, cell::RefCell, collections::{BTreeMap, HashMap, VecDeque}, fmt::Display, rc::Rc, sync::{Arc, Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}}, thread};
 use std::ops::DerefMut;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
 pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
@@ -23,6 +24,7 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
 pub struct HttpEndpoint {
     url: String,
     headers: HashMap<String, String>,
+    timeout_ms: Option<u64>,
 }
 
 impl HttpEndpoint {
@@ -33,11 +35,17 @@ impl HttpEndpoint {
         Self {
             url: url.to_owned(),
             headers,
+            timeout_ms: None,
         }
     }
 
     /// Sends a JSON POST request and deserializes the JSON response into `Res`.
-    pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(&self, client: reqwest::Client, req_data: &Req) -> std::io::Result<Res> {
+    pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(
+        &self,
+        client: reqwest::Client,
+        default_timeout_ms: Option<u64>,
+        req_data: &Req,
+    ) -> std::io::Result<Res> {
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
         let mut headers = HeaderMap::new();
@@ -52,8 +60,12 @@ impl HttpEndpoint {
         }
         headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
         headers.insert("Content-Type", "application/json".try_into().unwrap());
-        let res = client.post(url).headers(headers).body(json)
-            .send().await.map_err(into_io_error)?;
+        let timeout_ms = self.timeout_ms.or(default_timeout_ms);
+        let mut req = client.post(url).headers(headers).body(json);
+        if let Some(timeout_ms) = timeout_ms {
+            req = req.timeout(Duration::from_millis(timeout_ms));
+        }
+        let res = req.send().await.map_err(into_io_error)?;
         let res: Res = res.json().await.map_err(into_io_error)?;
         Ok(res)
     }
@@ -321,18 +333,30 @@ pub(crate) struct MechanicsState {
 
     #[unsafe_ignore_trace]
     reqwest_client: reqwest::Client,
+
+    #[unsafe_ignore_trace]
+    default_timeout_ms: Option<u64>,
 }
 
 impl MechanicsState {
-    pub(crate) fn new(config: Arc<MechanicsConfig>, client: reqwest::Client) -> Self {
+    pub(crate) fn new(
+        config: Arc<MechanicsConfig>,
+        client: reqwest::Client,
+        default_timeout_ms: Option<u64>,
+    ) -> Self {
         Self {
             config,
             reqwest_client: client,
+            default_timeout_ms,
         }
     }
 
     pub(crate) fn reqwest(&self) -> reqwest::Client {
         self.reqwest_client.clone()
+    }
+
+    pub(crate) fn default_timeout_ms(&self) -> Option<u64> {
+        self.default_timeout_ms
     }
 }
 
@@ -358,6 +382,12 @@ impl Default for MechanicsExecutionLimits {
 #[derive(Debug, Clone)]
 pub enum MechanicsError {
     Execution(Cow<'static, str>),
+    QueueFull(Cow<'static, str>),
+    QueueTimeout(Cow<'static, str>),
+    PoolClosed(Cow<'static, str>),
+    WorkerUnavailable(Cow<'static, str>),
+    Canceled(Cow<'static, str>),
+    Panic(Cow<'static, str>),
     RuntimePool(Cow<'static, str>),
 }
 
@@ -370,9 +400,39 @@ impl MechanicsError {
         Self::RuntimePool(msg.into())
     }
 
+    pub fn queue_full<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::QueueFull(msg.into())
+    }
+
+    pub fn queue_timeout<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::QueueTimeout(msg.into())
+    }
+
+    pub fn pool_closed<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::PoolClosed(msg.into())
+    }
+
+    pub fn worker_unavailable<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::WorkerUnavailable(msg.into())
+    }
+
+    pub fn canceled<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::Canceled(msg.into())
+    }
+
+    pub fn panic<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::Panic(msg.into())
+    }
+
     pub fn msg(&self) -> &str {
         match self {
             Self::Execution(msg) => msg.as_ref(),
+            Self::QueueFull(msg) => msg.as_ref(),
+            Self::QueueTimeout(msg) => msg.as_ref(),
+            Self::PoolClosed(msg) => msg.as_ref(),
+            Self::WorkerUnavailable(msg) => msg.as_ref(),
+            Self::Canceled(msg) => msg.as_ref(),
+            Self::Panic(msg) => msg.as_ref(),
             Self::RuntimePool(msg) => msg.as_ref(),
         }
     }
@@ -380,6 +440,12 @@ impl MechanicsError {
     pub fn kind(&self) -> &'static str {
         match &self {
             Self::Execution(_) => "MechanicsError::Execution",
+            Self::QueueFull(_) => "MechanicsError::QueueFull",
+            Self::QueueTimeout(_) => "MechanicsError::QueueTimeout",
+            Self::PoolClosed(_) => "MechanicsError::PoolClosed",
+            Self::WorkerUnavailable(_) => "MechanicsError::WorkerUnavailable",
+            Self::Canceled(_) => "MechanicsError::Canceled",
+            Self::Panic(_) => "MechanicsError::Panic",
             Self::RuntimePool(_) => "MechanicsError::RuntimePool",
         }
     }
@@ -399,6 +465,7 @@ pub struct RuntimeInternal {
     reqwest_client: reqwest::Client,
     queue: Rc<Queue>,
     execution_limits: MechanicsExecutionLimits,
+    default_endpoint_timeout_ms: Option<u64>,
 }
 
 impl RuntimeInternal {
@@ -430,7 +497,7 @@ impl RuntimeInternal {
                 let endpoint = state.config.endpoints.get(&endpoint_name)
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")))?;
                 
-                let res: Value = endpoint.post(state.reqwest(), &req_body).await
+                let res: Value = endpoint.post(state.reqwest(), state.default_timeout_ms(), &req_body).await
                     .map_err(|e| JsError::from_rust(e))?;
 
                 let res = JsValue::from_json(&res, &mut ctx.borrow_mut())?;
@@ -454,6 +521,7 @@ impl RuntimeInternal {
             reqwest_client,
             queue,
             execution_limits: MechanicsExecutionLimits::default(),
+            default_endpoint_timeout_ms: None,
         }
     }
 
@@ -465,12 +533,16 @@ impl RuntimeInternal {
         self.execution_limits
     }
 
+    pub fn set_default_endpoint_timeout_ms(&mut self, timeout_ms: Option<u64>) {
+        self.default_endpoint_timeout_ms = timeout_ms;
+    }
+
     /// Parses and evaluates a module, invokes its default export, and returns the JS result.
     pub(crate) fn run_source_inner(&mut self, job: MechanicsJob) -> JsResult<JsValue> {
         let arg = job.arg;
         let config = job.config;
         let source = job.mod_source;
-        let state = MechanicsState::new(config, self.reqwest_client.clone());
+        let state = MechanicsState::new(config, self.reqwest_client.clone(), self.default_endpoint_timeout_ms);
 
         let source = source.as_ref();
         let mut ctx = &mut self.ctx;
@@ -526,6 +598,377 @@ impl RuntimeInternal {
             Err(e) => {
                 Err(MechanicsError::execution(e.to_string()))
             },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MechanicsPoolConfig {
+    pub worker_count: usize,
+    pub queue_capacity: usize,
+    pub enqueue_timeout: Duration,
+    pub execution_limits: MechanicsExecutionLimits,
+    pub default_http_timeout_ms: Option<u64>,
+    pub restart_window: Duration,
+    pub max_restarts_in_window: usize,
+}
+
+impl Default for MechanicsPoolConfig {
+    fn default() -> Self {
+        let workers = std::thread::available_parallelism()
+            .map(|v| v.get())
+            .unwrap_or(1);
+        Self {
+            worker_count: workers.max(1),
+            queue_capacity: workers.saturating_mul(64).max(64),
+            enqueue_timeout: Duration::from_millis(500),
+            execution_limits: MechanicsExecutionLimits::default(),
+            default_http_timeout_ms: None,
+            restart_window: Duration::from_secs(10),
+            max_restarts_in_window: 16,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RestartGuard {
+    window: Duration,
+    max_restarts: usize,
+    restarts: VecDeque<Instant>,
+}
+
+impl RestartGuard {
+    fn new(window: Duration, max_restarts: usize) -> Self {
+        Self {
+            window,
+            max_restarts,
+            restarts: VecDeque::new(),
+        }
+    }
+
+    fn allow_restart(&mut self, now: Instant) -> bool {
+        while let Some(oldest) = self.restarts.front() {
+            if now.duration_since(*oldest) > self.window {
+                self.restarts.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if self.restarts.len() >= self.max_restarts {
+            return false;
+        }
+        self.restarts.push_back(now);
+        true
+    }
+}
+
+#[derive(Debug)]
+struct PoolJob {
+    job: MechanicsJob,
+    reply: Sender<Result<Value, MechanicsError>>,
+}
+
+#[derive(Debug)]
+enum PoolMessage {
+    Run(PoolJob),
+    Shutdown,
+}
+
+#[derive(Debug)]
+struct WorkerExit {
+    worker_id: usize,
+}
+
+#[derive(Debug)]
+struct MechanicsPoolShared {
+    tx: Sender<PoolMessage>,
+    rx: Receiver<PoolMessage>,
+    exit_tx: Sender<WorkerExit>,
+    exit_rx: Receiver<WorkerExit>,
+    workers: Mutex<HashMap<usize, thread::JoinHandle<()>>>,
+    next_worker_id: AtomicUsize,
+    closed: AtomicBool,
+    restart_blocked: AtomicBool,
+    restart_guard: Mutex<RestartGuard>,
+    execution_limits: MechanicsExecutionLimits,
+    default_http_timeout_ms: Option<u64>,
+    reqwest_client: reqwest::Client,
+}
+
+impl MechanicsPoolShared {
+    fn spawn_worker(shared: &Arc<Self>) -> usize {
+        let worker_id = shared.next_worker_id.fetch_add(1, Ordering::Relaxed);
+
+        let rx = shared.rx.clone();
+        let exit_tx = shared.exit_tx.clone();
+        let reqwest_client = shared.reqwest_client.clone();
+        let execution_limits = shared.execution_limits;
+        let default_http_timeout_ms = shared.default_http_timeout_ms;
+
+        let handle = thread::spawn(move || {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut runtime = RuntimeInternal::new_with_client(reqwest_client);
+                runtime.set_execution_limits(execution_limits);
+                runtime.set_default_endpoint_timeout_ms(default_http_timeout_ms);
+
+                loop {
+                    match rx.recv() {
+                        Ok(PoolMessage::Run(pool_job)) => {
+                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                runtime.run_source(pool_job.job)
+                            }));
+                            match result {
+                                Ok(result) => {
+                                    let _ = pool_job.reply.send(result);
+                                }
+                                Err(_) => {
+                                    let _ = pool_job.reply.send(Err(MechanicsError::panic(
+                                        "worker panicked while running job",
+                                    )));
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(PoolMessage::Shutdown) => break,
+                        Err(_) => break,
+                    }
+                }
+            }));
+
+            if run.is_err() {
+                // If the worker panicked outside task execution (runtime setup/loop),
+                // notify a synthetic panic event via restart path.
+                let _ = exit_tx.send(WorkerExit { worker_id });
+                return;
+            }
+
+            let _ = exit_tx.send(WorkerExit { worker_id });
+        });
+
+        let mut workers = shared.workers.lock().expect("workers mutex poisoned");
+        workers.insert(worker_id, handle);
+        worker_id
+    }
+
+    fn live_workers(&self) -> usize {
+        self.workers.lock().expect("workers mutex poisoned").len()
+    }
+}
+
+pub struct MechanicsPool {
+    shared: Arc<MechanicsPoolShared>,
+    enqueue_timeout: Duration,
+    supervisor: Option<thread::JoinHandle<()>>,
+}
+
+impl MechanicsPool {
+    pub fn new(config: MechanicsPoolConfig) -> Result<Self, MechanicsError> {
+        if config.worker_count == 0 {
+            return Err(MechanicsError::runtime_pool("worker_count must be > 0"));
+        }
+        if config.queue_capacity == 0 {
+            return Err(MechanicsError::runtime_pool("queue_capacity must be > 0"));
+        }
+        if config.max_restarts_in_window == 0 {
+            return Err(MechanicsError::runtime_pool("max_restarts_in_window must be > 0"));
+        }
+
+        let reqwest_client = reqwest::Client::builder()
+            .build()
+            .map_err(into_io_error)
+            .map_err(|e| MechanicsError::runtime_pool(e.to_string()))?;
+
+        let (tx, rx) = bounded(config.queue_capacity);
+        let (exit_tx, exit_rx) = bounded::<WorkerExit>(config.worker_count.saturating_mul(4).max(8));
+
+        let shared = Arc::new(MechanicsPoolShared {
+            tx,
+            rx,
+            exit_tx,
+            exit_rx,
+            workers: Mutex::new(HashMap::new()),
+            next_worker_id: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            restart_blocked: AtomicBool::new(false),
+            restart_guard: Mutex::new(RestartGuard::new(
+                config.restart_window,
+                config.max_restarts_in_window,
+            )),
+            execution_limits: config.execution_limits,
+            default_http_timeout_ms: config.default_http_timeout_ms,
+            reqwest_client,
+        });
+
+        for _ in 0..config.worker_count {
+            MechanicsPoolShared::spawn_worker(&shared);
+        }
+
+        let supervisor_shared = Arc::clone(&shared);
+        let supervisor = thread::spawn(move || {
+            loop {
+                if supervisor_shared.closed.load(Ordering::Acquire) {
+                    break;
+                }
+
+                match supervisor_shared.exit_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(event) => {
+                        let maybe_old = {
+                            let mut workers = supervisor_shared
+                                .workers
+                                .lock()
+                                .expect("workers mutex poisoned");
+                            workers.remove(&event.worker_id)
+                        };
+                        if let Some(handle) = maybe_old {
+                            let _ = handle.join();
+                        }
+
+                        if supervisor_shared.closed.load(Ordering::Acquire) {
+                            continue;
+                        }
+
+                        let now = Instant::now();
+                        let can_restart = {
+                            let mut guard = supervisor_shared
+                                .restart_guard
+                                .lock()
+                                .expect("restart guard mutex poisoned");
+                            guard.allow_restart(now)
+                        };
+
+                        if can_restart {
+                            MechanicsPoolShared::spawn_worker(&supervisor_shared);
+                        } else {
+                            supervisor_shared.restart_blocked.store(true, Ordering::Release);
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            shared,
+            enqueue_timeout: config.enqueue_timeout,
+            supervisor: Some(supervisor),
+        })
+    }
+
+    pub fn run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(MechanicsError::pool_closed("runtime pool is closed"));
+        }
+        if self.shared.restart_blocked.load(Ordering::Acquire) && self.shared.live_workers() == 0 {
+            return Err(MechanicsError::worker_unavailable(
+                "all workers are unavailable and restart guard is active",
+            ));
+        }
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let message = PoolMessage::Run(PoolJob {
+            job,
+            reply: reply_tx,
+        });
+
+        match self.shared.tx.send_timeout(message, self.enqueue_timeout) {
+            Ok(()) => {}
+            Err(SendTimeoutError::Timeout(PoolMessage::Run(pool_job))) => {
+                let _ = pool_job.reply.send(Err(MechanicsError::queue_timeout(
+                    "enqueue timed out because queue is full",
+                )));
+                return Err(MechanicsError::queue_timeout(
+                    "enqueue timed out because queue is full",
+                ));
+            }
+            Err(SendTimeoutError::Disconnected(_)) => {
+                return Err(MechanicsError::worker_unavailable(
+                    "job queue disconnected from workers",
+                ));
+            }
+            Err(SendTimeoutError::Timeout(PoolMessage::Shutdown)) => {
+                return Err(MechanicsError::runtime_pool("unexpected shutdown message timeout"));
+            }
+        }
+
+        match reply_rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(MechanicsError::worker_unavailable(
+                "worker dropped reply channel",
+            )),
+        }
+    }
+
+    pub fn try_run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(MechanicsError::pool_closed("runtime pool is closed"));
+        }
+        if self.shared.restart_blocked.load(Ordering::Acquire) && self.shared.live_workers() == 0 {
+            return Err(MechanicsError::worker_unavailable(
+                "all workers are unavailable and restart guard is active",
+            ));
+        }
+
+        let (reply_tx, reply_rx) = bounded(1);
+        let message = PoolMessage::Run(PoolJob {
+            job,
+            reply: reply_tx,
+        });
+
+        match self.shared.tx.try_send(message) {
+            Ok(()) => {}
+            Err(TrySendError::Full(PoolMessage::Run(_))) => {
+                return Err(MechanicsError::queue_full("queue is full"));
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(MechanicsError::worker_unavailable(
+                    "job queue disconnected from workers",
+                ));
+            }
+            Err(TrySendError::Full(PoolMessage::Shutdown)) => {
+                return Err(MechanicsError::runtime_pool("unexpected shutdown queue state"));
+            }
+        }
+
+        match reply_rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(MechanicsError::worker_unavailable(
+                "worker dropped reply channel",
+            )),
+        }
+    }
+}
+
+impl Drop for MechanicsPool {
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::Release);
+
+        loop {
+            match self.shared.rx.try_recv() {
+                Ok(PoolMessage::Run(job)) => {
+                    let _ = job
+                        .reply
+                        .send(Err(MechanicsError::canceled("pool dropped before job execution")));
+                }
+                Ok(PoolMessage::Shutdown) => {}
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+
+        let worker_count = self.shared.live_workers();
+        for _ in 0..worker_count {
+            let _ = self.shared.tx.send(PoolMessage::Shutdown);
+        }
+
+        if let Some(supervisor) = self.supervisor.take() {
+            let _ = supervisor.join();
+        }
+
+        let mut workers = self.shared.workers.lock().expect("workers mutex poisoned");
+        for (_, handle) in workers.drain() {
+            let _ = handle.join();
         }
     }
 }
