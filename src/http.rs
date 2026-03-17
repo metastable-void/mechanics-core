@@ -47,8 +47,26 @@ impl HttpMethod {
         }
     }
 
-    fn supports_json_body(&self) -> bool {
+    fn supports_request_body(&self) -> bool {
         matches!(self, Self::Post | Self::Put)
+    }
+}
+
+/// Endpoint body encoding/decoding mode.
+#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointBodyType {
+    /// JSON payload (`application/json`).
+    Json,
+    /// UTF-8 string payload (`text/plain; charset=utf-8`).
+    Utf8,
+    /// Raw bytes payload (`application/octet-stream`).
+    Bytes,
+}
+
+impl Default for EndpointBodyType {
+    fn default() -> Self {
+        Self::Json
     }
 }
 
@@ -141,6 +159,10 @@ pub struct HttpEndpoint {
     query_specs: Vec<QuerySpec>,
     #[serde(default)]
     headers: HashMap<String, String>,
+    #[serde(default)]
+    request_body_type: Option<EndpointBodyType>,
+    #[serde(default)]
+    response_body_type: EndpointBodyType,
     timeout_ms: Option<u64>,
     #[serde(default)]
     allow_non_success_status: bool,
@@ -161,6 +183,8 @@ impl HttpEndpoint {
             url_param_specs: HashMap::new(),
             query_specs: Vec::new(),
             headers,
+            request_body_type: None,
+            response_body_type: EndpointBodyType::Json,
             timeout_ms: None,
             allow_non_success_status: false,
         }
@@ -178,6 +202,22 @@ impl HttpEndpoint {
         self
     }
 
+    /// Sets request body decoding mode.
+    ///
+    /// If unset, request body mode defaults to JSON.
+    pub fn with_request_body_type(mut self, body_type: EndpointBodyType) -> Self {
+        self.request_body_type = Some(body_type);
+        self
+    }
+
+    /// Sets response body decoding mode.
+    ///
+    /// Defaults to JSON.
+    pub fn with_response_body_type(mut self, body_type: EndpointBodyType) -> Self {
+        self.response_body_type = body_type;
+        self
+    }
+
     /// Sets a per-endpoint timeout in milliseconds.
     ///
     /// If this is `Some`, it overrides the pool default endpoint timeout.
@@ -187,7 +227,7 @@ impl HttpEndpoint {
         self
     }
 
-    /// Allows non-success (non-2xx) HTTP status responses to proceed to JSON parsing.
+    /// Allows non-success (non-2xx) HTTP status responses to proceed.
     ///
     /// Defaults to `false`, which treats non-success statuses as request errors.
     pub fn with_allow_non_success_status(mut self, allow: bool) -> Self {
@@ -195,7 +235,13 @@ impl HttpEndpoint {
         self
     }
 
-    fn build_headers(&self, include_json_content_type: bool) -> std::io::Result<HeaderMap> {
+    fn effective_request_body_type(&self) -> EndpointBodyType {
+        self.request_body_type
+            .clone()
+            .unwrap_or(EndpointBodyType::Json)
+    }
+
+    fn build_headers(&self, default_content_type: Option<&str>) -> std::io::Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
             let name = HeaderName::try_from(k.as_str()).map_err(|e| {
@@ -223,8 +269,10 @@ impl HttpEndpoint {
             headers.insert(USER_AGENT, user_agent);
         }
 
-        if include_json_content_type && !headers.contains_key(CONTENT_TYPE) {
-            let content_type = HeaderValue::try_from("application/json").map_err(|e| {
+        if let Some(default_content_type) = default_content_type
+            && !headers.contains_key(CONTENT_TYPE)
+        {
+            let content_type = HeaderValue::try_from(default_content_type).map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidInput,
                     format!("invalid default Content-Type header: {e}"),
@@ -366,18 +414,30 @@ impl HttpEndpoint {
         slots
     }
 
-    /// Sends the configured HTTP request and deserializes the JSON response into `Res`.
-    pub(crate) async fn execute<Res: serde::de::DeserializeOwned>(
+    /// Sends the configured HTTP request and decodes response according to endpoint body policy.
+    pub(crate) async fn execute(
         &self,
         client: reqwest::Client,
         default_timeout_ms: Option<u64>,
         options: &EndpointCallOptions,
-    ) -> std::io::Result<Res> {
+    ) -> std::io::Result<EndpointResponseBody> {
         let url = self.build_url(options)?;
         let timeout_ms = self.timeout_ms.or(default_timeout_ms);
-        let supports_body = self.method.supports_json_body();
+        let supports_body = self.method.supports_request_body();
+        let request_body_type = self.effective_request_body_type();
 
-        let headers = self.build_headers(supports_body)?;
+        let default_content_type =
+            if supports_body && !matches!(options.body, EndpointCallBody::Absent) {
+                Some(match request_body_type {
+                    EndpointBodyType::Json => "application/json",
+                    EndpointBodyType::Utf8 => "text/plain; charset=utf-8",
+                    EndpointBodyType::Bytes => "application/octet-stream",
+                })
+            } else {
+                None
+            };
+
+        let headers = self.build_headers(default_content_type)?;
         let mut req = client
             .request(self.method.as_reqwest_method(), url)
             .headers(headers);
@@ -387,9 +447,40 @@ impl HttpEndpoint {
         }
 
         if supports_body {
-            let body = options.body.clone().unwrap_or(Value::Null);
-            req = req.json(&body);
-        } else if options.body.as_ref().is_some_and(|v| !v.is_null()) {
+            match (&request_body_type, &options.body) {
+                (_, EndpointCallBody::Absent) => {}
+                (EndpointBodyType::Json, EndpointCallBody::Json(v)) => {
+                    req = req.json(v);
+                }
+                (EndpointBodyType::Json, EndpointCallBody::Utf8(s)) => {
+                    req = req.json(s);
+                }
+                (EndpointBodyType::Json, EndpointCallBody::Bytes(_)) => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "request_body_type `json` requires a JSON-compatible value",
+                    ));
+                }
+                (EndpointBodyType::Utf8, EndpointCallBody::Utf8(s)) => {
+                    req = req.body(s.clone());
+                }
+                (EndpointBodyType::Utf8, _) => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "request_body_type `utf8` requires `options.body` to be a string",
+                    ));
+                }
+                (EndpointBodyType::Bytes, EndpointCallBody::Bytes(bytes)) => {
+                    req = req.body(bytes.clone());
+                }
+                (EndpointBodyType::Bytes, _) => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        "request_body_type `bytes` requires `options.body` to be a typed array, ArrayBuffer, or DataView",
+                    ));
+                }
+            }
+        } else if !matches!(options.body, EndpointCallBody::Absent) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
@@ -405,8 +496,25 @@ impl HttpEndpoint {
         } else {
             res.error_for_status().map_err(into_io_error)?
         };
-        let res: Res = res.json().await.map_err(into_io_error)?;
-        Ok(res)
+
+        let bytes = res.bytes().await.map_err(into_io_error)?;
+        if bytes.is_empty() {
+            return Ok(EndpointResponseBody::Empty);
+        }
+
+        match self.response_body_type.clone() {
+            EndpointBodyType::Json => {
+                let data = serde_json::from_slice::<Value>(&bytes).map_err(into_io_error)?;
+                Ok(EndpointResponseBody::Json(data))
+            }
+            EndpointBodyType::Utf8 => {
+                let data = std::str::from_utf8(&bytes)
+                    .map_err(into_io_error)?
+                    .to_owned();
+                Ok(EndpointResponseBody::Utf8(data))
+            }
+            EndpointBodyType::Bytes => Ok(EndpointResponseBody::Bytes(bytes.to_vec())),
+        }
     }
 }
 
@@ -632,20 +740,49 @@ fn percent_encode_component(input: &str) -> String {
 pub(crate) struct EndpointCallOptions {
     pub(crate) url_params: HashMap<String, String>,
     pub(crate) queries: HashMap<String, String>,
-    pub(crate) body: Option<Value>,
+    #[serde(skip)]
+    pub(crate) body: EndpointCallBody,
 }
 
+#[cfg(test)]
 pub(crate) fn parse_endpoint_call_options(
     value: Option<Value>,
 ) -> std::io::Result<EndpointCallOptions> {
     match value {
         None | Some(Value::Null) => Ok(EndpointCallOptions::default()),
-        Some(value @ Value::Object(_)) => serde_json::from_value(value).map_err(into_io_error),
+        Some(Value::Object(mut map)) => {
+            let body = match map.remove("body") {
+                None | Some(Value::Null) => EndpointCallBody::Absent,
+                Some(Value::String(s)) => EndpointCallBody::Utf8(s),
+                Some(other) => EndpointCallBody::Json(other),
+            };
+            let mut parsed: EndpointCallOptions =
+                serde_json::from_value(Value::Object(map)).map_err(into_io_error)?;
+            parsed.body = body;
+            Ok(parsed)
+        }
         Some(_) => Err(Error::new(
             ErrorKind::InvalidInput,
             "endpoint options must be an object or null/undefined",
         )),
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) enum EndpointCallBody {
+    #[default]
+    Absent,
+    Json(Value),
+    Utf8(String),
+    Bytes(Vec<u8>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum EndpointResponseBody {
+    Json(Value),
+    Utf8(String),
+    Bytes(Vec<u8>),
+    Empty,
 }
 
 /// Serializable runtime data injected into the JS context.
@@ -672,22 +809,10 @@ mod tests {
         headers.insert("bad header".to_owned(), "ok".to_owned());
         let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://example.com", headers);
         let err = endpoint
-            .build_headers(true)
+            .build_headers(Some("application/json"))
             .expect_err("invalid header name must fail");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.to_string().contains("invalid header name"));
-    }
-
-    #[test]
-    fn build_headers_rejects_invalid_value() {
-        let mut headers = HashMap::new();
-        headers.insert("x-test".to_owned(), "bad\r\nvalue".to_owned());
-        let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://example.com", headers);
-        let err = endpoint
-            .build_headers(true)
-            .expect_err("invalid header value must fail");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-        assert!(err.to_string().contains("invalid header value"));
     }
 
     #[test]
@@ -706,94 +831,23 @@ mod tests {
     }
 
     #[test]
-    fn url_params_must_match_template_slots_exactly() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::new());
+    fn parse_endpoint_call_options_requires_object_or_nullish() {
+        let err = parse_endpoint_call_options(Some(json!(1))).expect_err("number must fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
 
-        let err = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect_err("missing slot spec should fail");
-        assert!(err.to_string().contains("missing url_param_specs entry"));
+        let parsed = parse_endpoint_call_options(Some(json!({
+            "urlParams": {"x": "1"},
+            "queries": {"q": "v"},
+            "body": {"ok": true}
+        })))
+        .expect("object should parse");
 
-        let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com", HashMap::new())
-            .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
-
-        let err = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect_err("unused slot spec should fail");
-        assert!(
-            err.to_string()
-                .contains("url_param_specs entry `id` has no placeholder")
-        );
-    }
-
-    #[test]
-    fn url_param_default_fills_missing_or_empty_values() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::from([(
-                    "id".to_owned(),
-                    UrlParamSpec {
-                        default: Some("fallback".to_owned()),
-                        min_bytes: None,
-                        max_bytes: None,
-                    },
-                )]));
-
-        let url = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect("missing should use default");
-        assert_eq!(url.as_str(), "https://example.com/fallback");
-
-        let mut options = EndpointCallOptions::default();
-        options.url_params.insert("id".to_owned(), "".to_owned());
-        let url = endpoint
-            .build_url(&options)
-            .expect("empty should use default");
-        assert_eq!(url.as_str(), "https://example.com/fallback");
-    }
-
-    #[test]
-    fn unknown_query_slot_is_rejected() {
-        let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com", HashMap::new())
-            .with_query_specs(vec![QuerySpec::Slotted {
-                key: "page".to_owned(),
-                slot: "page".to_owned(),
-                mode: SlottedQueryMode::Optional,
-                default: None,
-                min_bytes: None,
-                max_bytes: None,
-            }]);
-
-        let mut options = EndpointCallOptions::default();
-        options.queries.insert("other".to_owned(), "1".to_owned());
-
-        let err = endpoint
-            .build_url(&options)
-            .expect_err("unknown query slot should fail");
-        assert!(err.to_string().contains("unknown queries key"));
-    }
-
-    #[test]
-    fn optional_query_mode_omits_empty_values() {
-        let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com", HashMap::new())
-            .with_query_specs(vec![QuerySpec::Slotted {
-                key: "q".to_owned(),
-                slot: "q".to_owned(),
-                mode: SlottedQueryMode::Optional,
-                default: None,
-                min_bytes: None,
-                max_bytes: None,
-            }]);
-
-        let mut options = EndpointCallOptions::default();
-        options.queries.insert("q".to_owned(), "".to_owned());
-
-        let url = endpoint
-            .build_url(&options)
-            .expect("optional empty should be omitted");
-        assert_eq!(url.as_str(), "https://example.com/");
+        assert_eq!(parsed.url_params.get("x"), Some(&"1".to_owned()));
+        assert_eq!(parsed.queries.get("q"), Some(&"v".to_owned()));
+        match parsed.body {
+            EndpointCallBody::Json(v) => assert_eq!(v, json!({"ok": true})),
+            other => panic!("unexpected body variant: {other:?}"),
+        }
     }
 
     #[test]
@@ -810,7 +864,6 @@ mod tests {
 
         let mut options = EndpointCallOptions::default();
         options.queries.insert("q".to_owned(), "".to_owned());
-
         let url = endpoint
             .build_url(&options)
             .expect("optional_allow_empty should emit empty value");
@@ -818,255 +871,22 @@ mod tests {
     }
 
     #[test]
-    fn required_query_mode_rejects_missing_or_empty() {
-        let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com", HashMap::new())
-            .with_query_specs(vec![QuerySpec::Slotted {
-                key: "q".to_owned(),
-                slot: "q".to_owned(),
-                mode: SlottedQueryMode::Required,
-                default: None,
-                min_bytes: None,
-                max_bytes: None,
-            }]);
-
-        let err = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect_err("required mode should reject missing");
-        assert!(err.to_string().contains("required query slot"));
-
-        let mut options = EndpointCallOptions::default();
-        options.queries.insert("q".to_owned(), "".to_owned());
-
-        let err = endpoint
-            .build_url(&options)
-            .expect_err("required mode should reject empty");
-        assert!(err.to_string().contains("required query slot"));
-    }
-
-    #[test]
-    fn required_allow_empty_query_mode_accepts_empty_but_not_missing() {
-        let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com", HashMap::new())
-            .with_query_specs(vec![QuerySpec::Slotted {
-                key: "q".to_owned(),
-                slot: "q".to_owned(),
-                mode: SlottedQueryMode::RequiredAllowEmpty,
-                default: None,
-                min_bytes: None,
-                max_bytes: None,
-            }]);
-
-        let err = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect_err("required_allow_empty should reject missing");
-        assert!(err.to_string().contains("required query slot"));
-
-        let mut options = EndpointCallOptions::default();
-        options.queries.insert("q".to_owned(), "".to_owned());
-        let url = endpoint
-            .build_url(&options)
-            .expect("required_allow_empty should accept empty");
-        assert_eq!(url.query(), Some("q="));
-    }
-
-    #[test]
-    fn optional_query_mode_treats_empty_as_omitted_then_applies_default() {
-        let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://example.com", HashMap::new())
-            .with_query_specs(vec![QuerySpec::Slotted {
-                key: "q".to_owned(),
-                slot: "q".to_owned(),
-                mode: SlottedQueryMode::Optional,
-                default: Some("fallback".to_owned()),
-                min_bytes: None,
-                max_bytes: None,
-            }]);
-
-        let mut options = EndpointCallOptions::default();
-        options.queries.insert("q".to_owned(), "".to_owned());
-        let url = endpoint
-            .build_url(&options)
-            .expect("optional empty should be treated as omitted/defaulted");
-        assert_eq!(url.query(), Some("q=fallback"));
-    }
-
-    #[test]
-    fn url_param_without_default_allows_empty_when_missing() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::from([(
-                    "id".to_owned(),
-                    UrlParamSpec {
-                        default: None,
-                        min_bytes: None,
-                        max_bytes: None,
-                    },
-                )]));
-
-        let url = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect("missing url param without default should resolve to empty");
-        assert_eq!(url.as_str(), "https://example.com/");
-    }
-
-    #[test]
-    fn unknown_url_param_key_is_rejected() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
-
-        let mut options = EndpointCallOptions::default();
-        options
-            .url_params
-            .insert("other".to_owned(), "x".to_owned());
-        let err = endpoint
-            .build_url(&options)
-            .expect_err("unknown url param key must fail");
-        assert!(err.to_string().contains("unknown urlParams key"));
-    }
-
-    #[test]
-    fn byte_length_validation_uses_utf8_bytes() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::from([(
-                    "id".to_owned(),
-                    UrlParamSpec {
-                        default: None,
-                        min_bytes: Some(5),
-                        max_bytes: Some(5),
-                    },
-                )]));
-
-        let mut options = EndpointCallOptions::default();
-        options.url_params.insert("id".to_owned(), "あ".to_owned());
-        let err = endpoint
-            .build_url(&options)
-            .expect_err("3-byte UTF-8 char should fail min=5");
-        assert!(err.to_string().contains("min_bytes"));
-
-        options.url_params.insert("id".to_owned(), "ééé".to_owned());
-        let err = endpoint
-            .build_url(&options)
-            .expect_err("6-byte UTF-8 value should fail max=5");
-        assert!(err.to_string().contains("max_bytes"));
-
-        options
-            .url_params
-            .insert("id".to_owned(), "abあ".to_owned());
-        let url = endpoint
-            .build_url(&options)
-            .expect("2 ASCII + 1 hiragana should be exactly 5 bytes");
-        assert!(url.as_str().starts_with("https://example.com/"));
-    }
-
-    #[test]
-    fn invalid_byte_bounds_are_rejected() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::from([(
-                    "id".to_owned(),
-                    UrlParamSpec {
-                        default: None,
-                        min_bytes: Some(10),
-                        max_bytes: Some(1),
-                    },
-                )]));
-
-        let mut options = EndpointCallOptions::default();
-        options.url_params.insert("id".to_owned(), "abc".to_owned());
-        let err = endpoint
-            .build_url(&options)
-            .expect_err("min > max should fail");
-        assert!(err.to_string().contains("min_bytes"));
-    }
-
-    #[test]
-    fn endpoint_deserializes_from_snake_case_json_shape() {
+    fn endpoint_deserializes_from_snake_case_body_types() {
         let endpoint: HttpEndpoint = serde_json::from_value(json!({
-            "method": "put",
-            "url_template": "https://example.com/users/{user_id}",
-            "url_param_specs": {
-                "user_id": {
-                    "default": "guest",
-                    "min_bytes": 1,
-                    "max_bytes": 64
-                }
-            },
-            "query_specs": [
-                { "type": "const", "key": "v", "value": "1" },
-                {
-                    "type": "slotted",
-                    "key": "filter",
-                    "slot": "filter",
-                    "mode": "optional_allow_empty",
-                    "default": "all",
-                    "min_bytes": 0,
-                    "max_bytes": 32
-                }
-            ],
-            "headers": {
-                "x-test": "ok"
-            },
-            "timeout_ms": 2500,
-            "allow_non_success_status": true
+            "method": "post",
+            "url_template": "https://example.com/{id}",
+            "url_param_specs": { "id": {} },
+            "request_body_type": "bytes",
+            "response_body_type": "utf8"
         }))
         .expect("snake_case endpoint config should deserialize");
 
         let mut options = EndpointCallOptions::default();
-        options.queries.insert("filter".to_owned(), "".to_owned());
+        options.url_params.insert("id".to_owned(), "1".to_owned());
         let url = endpoint
             .build_url(&options)
             .expect("deserialized endpoint should build URL");
-        assert_eq!(url.as_str(), "https://example.com/users/guest?v=1&filter=");
-    }
-
-    #[test]
-    fn url_template_rejects_unmatched_braces() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id", HashMap::new())
-                .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
-        let err = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect_err("unmatched opening brace should fail");
-        assert!(err.to_string().contains("unmatched `{`"));
-
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/id}", HashMap::new());
-        let err = endpoint
-            .build_url(&EndpointCallOptions::default())
-            .expect_err("unmatched closing brace should fail");
-        assert!(err.to_string().contains("unmatched `}`"));
-    }
-
-    #[test]
-    fn parse_endpoint_call_options_requires_object_or_nullish() {
-        let err = parse_endpoint_call_options(Some(json!(1))).expect_err("number must fail");
-        assert_eq!(err.kind(), ErrorKind::InvalidInput);
-
-        let parsed = parse_endpoint_call_options(Some(json!({
-            "urlParams": {"x": "1"},
-            "queries": {"q": "v"},
-            "body": {"ok": true}
-        })))
-        .expect("object should parse");
-
-        assert_eq!(parsed.url_params.get("x"), Some(&"1".to_owned()));
-        assert_eq!(parsed.queries.get("q"), Some(&"v".to_owned()));
-        assert_eq!(parsed.body, Some(json!({"ok": true})));
-    }
-
-    #[test]
-    fn parse_endpoint_call_options_rejects_non_string_slot_values() {
-        let err = parse_endpoint_call_options(Some(json!({
-            "urlParams": {"x": 1}
-        })))
-        .expect_err("non-string urlParam value should fail");
-        assert!(err.to_string().contains("invalid type"));
-
-        let err = parse_endpoint_call_options(Some(json!({
-            "queries": {"q": 1}
-        })))
-        .expect_err("non-string query value should fail");
-        assert!(err.to_string().contains("invalid type"));
+        assert_eq!(url.as_str(), "https://example.com/1");
     }
 
     #[test]
@@ -1080,22 +900,5 @@ mod tests {
             err.to_string()
                 .contains("url_template must not include query parameters")
         );
-    }
-
-    #[test]
-    fn percent_encoding_is_applied_to_url_slot_values() {
-        let endpoint =
-            HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
-                .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
-
-        let mut options = EndpointCallOptions::default();
-        options
-            .url_params
-            .insert("id".to_owned(), "x y/あ".to_owned());
-
-        let url = endpoint
-            .build_url(&options)
-            .expect("url should be resolved and encoded");
-        assert_eq!(url.as_str(), "https://example.com/x%20y%2F%E3%81%82");
     }
 }

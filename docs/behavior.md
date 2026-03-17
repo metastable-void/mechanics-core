@@ -9,7 +9,7 @@
 The crate API is exported from `src/lib.rs`:
 - `MechanicsPool`, `MechanicsPoolConfig`
 - `MechanicsJob`, `MechanicsExecutionLimits`
-- `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`
+- `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`
 - `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
 - `MechanicsError`
 
@@ -61,18 +61,28 @@ Resolution behavior:
 - Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`DELETE`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
 - URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
 - Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
+- Request body serialization uses endpoint `request_body_type`.
+- Response body parsing uses endpoint `response_body_type`.
+- Empty response bodies are always returned to JS as `null`.
 - Configured headers are validated; invalid names/values fail the call.
 - By default, non-2xx HTTP statuses fail the call.
 - `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows JSON parsing on non-2xx statuses.
-- Response body is parsed as JSON and returned to JS.
 
 `endpoint(name, options)` payload shape (camelCase):
 - `urlParams`: object of string slot values for URL template substitution.
 - `queries`: object of string slot values used by configured slotted query specs.
-- `body`: JSON value payload (`POST`/`PUT`); for `GET`/`DELETE` this must be `null` or omitted.
+- `body`: optional payload value.
+- accepted request input types depend on endpoint `request_body_type`:
+- `json`: any JSON-convertible JS value.
+- `utf8`: `string`.
+- `bytes`: `TypedArray | ArrayBuffer | DataView` (treated as bytes).
+- for `GET`/`DELETE`, `body` must be omitted or `null`.
 
 Config shape is JSON-friendly and snake_case (`serde`):
 - endpoint definitions use `method`, `url_template`, `url_param_specs`, and `query_specs`.
+- endpoint body directives:
+- `request_body_type`: `"json" | "utf8" | "bytes"` (method defaults apply).
+- `response_body_type`: `"json" | "utf8" | "bytes"` (default `"json"`).
 - `url_template` is a full URL template string and placeholder names must be unique.
 - `url_param_specs` maps placeholder names to constraints and optional defaults.
 - `query_specs` is an ordered list with `type: "const" | "slotted"`.
@@ -128,12 +138,47 @@ Minimal endpoint config example (JSON):
       "headers": {
         "x-api-key": "redacted"
       },
+      "request_body_type": "json",
+      "response_body_type": "json",
       "timeout_ms": 5000,
       "allow_non_success_status": false
     }
   }
 }
 ```
+
+## Built-in module: `mechanics:form-urlencoded`
+Runtime registers a synthetic module named `mechanics:form-urlencoded` with:
+- `encode(record: Record<string, string>): string`
+- `decode(params: string): Record<string, string>`
+
+Notes:
+- UTF-8 form-urlencode algorithm (`application/x-www-form-urlencoded`).
+- `decode` accepts optional leading `?`.
+- duplicate decoded keys use "last one wins" semantics.
+
+## Built-in module: `mechanics:base64`
+Runtime registers a synthetic module named `mechanics:base64` with:
+- `encode(bufferLike: TypedArray | ArrayBuffer | DataView, variant: "base64" | "base64url" = "base64"): string`
+- `decode(encoded: string, variant: "base64" | "base64url" = "base64"): Uint8Array`
+
+## Built-in module: `mechanics:hex`
+Runtime registers a synthetic module named `mechanics:hex` with:
+- `encode(bufferLike: TypedArray | ArrayBuffer | DataView): string`
+- `decode(encoded: string): Uint8Array`
+
+## Built-in module: `mechanics:base32`
+Runtime registers a synthetic module named `mechanics:base32` with:
+- `encode(bufferLike: TypedArray | ArrayBuffer | DataView, variant: "base32" | "base32hex" = "base32"): string`
+- `decode(encoded: string, variant: "base32" | "base32hex" = "base32"): Uint8Array`
+
+## Built-in module: `mechanics:rand`
+Runtime registers a synthetic module named `mechanics:rand` with default export:
+- `fillRandom(bufferLike: TypedArray | ArrayBuffer | DataView): void`
+
+## Type declarations
+- `ts-types/` contains `.d.ts` declarations for runtime synthetic modules.
+- Any public runtime API change must update `ts-types/*.d.ts` in the same change.
 
 Timeout behavior:
 - Endpoint timeout = `HttpEndpoint::with_timeout_ms(...)` if set,
@@ -233,10 +278,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 ## Assumptions and limitations
-- Only `mechanics:endpoint` is provided as importable synthetic module by default.
+- Synthetic modules provided by default:
+- `mechanics:endpoint`
+- `mechanics:form-urlencoded`
+- `mechanics:base64`
+- `mechanics:hex`
+- `mechanics:base32`
+- `mechanics:rand`
 - Results must be JSON-convertible to be returned successfully.
 - Queue cancellation is best-effort; jobs already executing continue until runtime completion/limits.
-- HTTP helper is JSON-out only; request body is JSON for `POST`/`PUT`.
+- `mechanics:endpoint` may return JSON, UTF-8 string, bytes (`Uint8Array`), or `null` (empty body) based on endpoint configuration.
 - URL/query value sources are constrained to configured slots (no arbitrary URL/method/header override from JS).
 - This crate currently does not include persistent module caching (source is parsed per job).
 

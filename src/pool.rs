@@ -623,7 +623,7 @@ impl Drop for MechanicsPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{HttpEndpoint, HttpMethod, MechanicsConfig};
+    use crate::{EndpointBodyType, HttpEndpoint, HttpMethod, MechanicsConfig};
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1078,6 +1078,134 @@ mod tests {
     }
 
     #[test]
+    fn form_urlencoded_module_roundtrip() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { encode, decode } from "mechanics:form-urlencoded";
+            export default function main(_arg) {
+                const encoded = encode({ hello: "world test", x: "1+2" });
+                const decoded = decode(encoded);
+                return { encoded, decoded };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["decoded"]["hello"], json!("world test"));
+        assert_eq!(value["decoded"]["x"], json!("1+2"));
+        let encoded = value["encoded"].as_str().expect("encoded should be string");
+        assert!(encoded.contains("hello=world+test"));
+    }
+
+    #[test]
+    fn base64_module_roundtrip_base64url() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { encode, decode } from "mechanics:base64";
+            export default function main(_arg) {
+                const raw = new Uint8Array([1, 2, 3, 250, 255]);
+                const encoded = encode(raw, "base64url");
+                const decoded = decode(encoded, "base64url");
+                return { encoded, bytes: Array.from(decoded) };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["bytes"], json!([1, 2, 3, 250, 255]));
+        assert!(
+            !value["encoded"]
+                .as_str()
+                .expect("encoded should be string")
+                .contains('=')
+        );
+    }
+
+    #[test]
+    fn hex_module_roundtrip() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { encode, decode } from "mechanics:hex";
+            export default function main(_arg) {
+                const raw = new Uint8Array([0, 15, 16, 255]);
+                const encoded = encode(raw);
+                const decoded = decode(encoded);
+                return { encoded, bytes: Array.from(decoded) };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["encoded"], json!("000f10ff"));
+        assert_eq!(value["bytes"], json!([0, 15, 16, 255]));
+    }
+
+    #[test]
+    fn base32_module_roundtrip_base32hex() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { encode, decode } from "mechanics:base32";
+            export default function main(_arg) {
+                const raw = new Uint8Array([104, 101, 108, 108, 111]);
+                const encoded = encode(raw, "base32hex");
+                const decoded = decode(encoded, "base32hex");
+                return { encoded, bytes: Array.from(decoded) };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["bytes"], json!([104, 101, 108, 108, 111]));
+        assert!(
+            value["encoded"]
+                .as_str()
+                .expect("encoded should be string")
+                .len()
+                >= 8
+        );
+    }
+
+    #[test]
+    fn rand_module_fills_buffer() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import fillRandom from "mechanics:rand";
+            export default function main(_arg) {
+                const raw = new Uint8Array(32);
+                fillRandom(raw);
+                const arr = Array.from(raw);
+                const anyNonZero = arr.some((x) => x !== 0);
+                return { anyNonZero, len: arr.length };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["len"], json!(32));
+        assert_eq!(value["anyNonZero"], json!(true));
+    }
+
+    #[test]
     fn loop_iteration_limit_stops_infinite_loop() {
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
@@ -1228,6 +1356,40 @@ mod tests {
         match err {
             MechanicsError::Execution(msg) => {
                 assert!(msg.contains("does not accept a request body"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_bytes_request_type_rejects_non_buffer_body() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Post,
+            "https://example.com/anything",
+            HashMap::new(),
+        )
+        .with_request_body_type(EndpointBodyType::Bytes);
+        let config = endpoint_config("ep", endpoint);
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: "not-bytes" });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("bytes request type should reject string body");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("request_body_type `bytes`"));
             }
             other => panic!("unexpected error kind: {other}"),
         }
