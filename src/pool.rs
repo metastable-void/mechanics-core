@@ -700,6 +700,36 @@ mod tests {
     }
 
     #[test]
+    fn json_conversion_error_is_reported_as_execution_error() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            export default function main(_arg) {
+                return 1n;
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("BigInt result should fail JSON conversion");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(
+                    msg.contains("BigInt")
+                        || msg.contains("JSON")
+                        || msg.contains("serialize")
+                        || msg.contains("convert")
+                );
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn execution_timeout_stops_slow_async_job() {
         let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);

@@ -9,7 +9,6 @@ use futures_lite::{StreamExt, future};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
-    ops::DerefMut,
     rc::Rc,
     time::Duration,
 };
@@ -19,7 +18,7 @@ use tokio::task;
 pub(crate) struct Queue {
     async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
     promise_jobs: RefCell<VecDeque<PromiseJob>>,
-    timeout_jobs: RefCell<BTreeMap<JsInstant, TimeoutJob>>,
+    timeout_jobs: RefCell<BTreeMap<JsInstant, Vec<TimeoutJob>>>,
     generic_jobs: RefCell<VecDeque<GenericJob>>,
     deadline: RefCell<Option<JsInstant>>,
     tokio_rt: tokio::runtime::Runtime,
@@ -78,13 +77,26 @@ impl Queue {
     fn drain_timeout_jobs(&self, context: &mut Context) {
         let now = context.clock().now();
 
-        let mut timeouts_borrow = self.timeout_jobs.borrow_mut();
-        let mut jobs_to_keep = timeouts_borrow.split_off(&now);
-        jobs_to_keep.retain(|_, job| !job.is_cancelled());
-        let jobs_to_run = std::mem::replace(timeouts_borrow.deref_mut(), jobs_to_keep);
-        drop(timeouts_borrow);
+        let jobs_to_run = {
+            let mut timeouts_borrow = self.timeout_jobs.borrow_mut();
+            timeouts_borrow.retain(|_, jobs| {
+                jobs.retain(|job| !job.is_cancelled());
+                !jobs.is_empty()
+            });
 
-        for job in jobs_to_run.into_values() {
+            let mut due = Vec::new();
+            while let Some((at, _)) = timeouts_borrow.first_key_value() {
+                if *at > now {
+                    break;
+                }
+                if let Some((_, mut jobs)) = timeouts_borrow.pop_first() {
+                    due.append(&mut jobs);
+                }
+            }
+            due
+        };
+
+        for job in jobs_to_run {
             if let Err(e) = job.call(context) {
                 eprintln!("Uncaught {e}");
             }
@@ -120,7 +132,11 @@ impl JobExecutor for Queue {
             Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
             Job::TimeoutJob(t) => {
                 let now = context.clock().now();
-                self.timeout_jobs.borrow_mut().insert(now + t.timeout(), t);
+                self.timeout_jobs
+                    .borrow_mut()
+                    .entry(now + t.timeout())
+                    .or_default()
+                    .push(t);
             }
             Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
             _ => panic!("unsupported job type"),
@@ -253,5 +269,42 @@ impl ModuleLoader for CustomModuleLoader {
             .ok_or(JsError::from_native(
                 JsNativeError::reference().with_message("Module not found"),
             ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boa_engine::{JsValue, job::TimeoutJob};
+    use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn timeout_jobs_at_same_instant_do_not_overwrite_each_other() {
+        let queue = Queue::new();
+        let mut context = Context::default();
+        let at = context.clock().now();
+
+        let counter = Rc::new(Cell::new(0));
+        let c1 = Rc::clone(&counter);
+        let c2 = Rc::clone(&counter);
+
+        let job1 = TimeoutJob::from_duration(
+            move |_| {
+                c1.set(c1.get() + 1);
+                Ok(JsValue::undefined())
+            },
+            Duration::ZERO,
+        );
+        let job2 = TimeoutJob::from_duration(
+            move |_| {
+                c2.set(c2.get() + 10);
+                Ok(JsValue::undefined())
+            },
+            Duration::ZERO,
+        );
+
+        queue.timeout_jobs.borrow_mut().insert(at, vec![job1, job2]);
+        queue.drain_timeout_jobs(&mut context);
+        assert_eq!(counter.get(), 11);
     }
 }

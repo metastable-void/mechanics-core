@@ -206,10 +206,9 @@ impl RuntimeInternal {
         match self.run_source_inner(job) {
             Ok(data) => {
                 let ctx = &mut self.ctx;
-                match data.to_json(ctx) {
-                    Ok(d) => Ok(d.unwrap_or(Value::Null)),
-                    _ => Ok(Value::Null),
-                }
+                data.to_json(ctx)
+                    .map(|d| d.unwrap_or(Value::Null))
+                    .map_err(|e| MechanicsError::execution(e.to_string()))
             }
 
             Err(e) => Err(MechanicsError::execution(e.to_string())),
