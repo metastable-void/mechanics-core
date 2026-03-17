@@ -40,19 +40,20 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 ## Low
 
 7. [DONE] Panics/unwraps remain in non-test runtime paths.
-- Fixed in: `src/runtime.rs` (`ContextBuilder::build` errors are mapped to `MechanicsError::RuntimePool`), `src/executor.rs` (Tokio runtime build returns `Result`; unsupported job types become JS errors), `src/http.rs` (default header values validated without panic paths), `src/pool.rs` (poisoned mutexes are recovered and fallible `thread::Builder::spawn` replaces panic-prone `thread::spawn` in runtime paths).
+- Fixed in: `src/runtime.rs` (`ContextBuilder::build` errors are mapped to `MechanicsError::RuntimePool`), `src/executor.rs` (Tokio runtime build returns `Result`; unsupported job types become JS errors), `src/http.rs` (default header values validated without panic paths), `src/pool.rs` (fallible `thread::Builder::spawn` replaces panic-prone `thread::spawn` in runtime paths; pool locks migrated to `parking_lot`).
 - Previous issue: panic-prone convenience methods (`unwrap`, explicit `panic!`, panic-capable header insertion helpers) were used in runtime paths.
 
-8. Worker startup handshake sends rendezvous signal while holding worker map mutex.
+8. Worker startup handshake sends rendezvous signal while holding worker map lock.
 - Location: `src/pool.rs:193-196`
 - Why: `start_tx.send(())` on zero-capacity channel while lock is held.
 - Impact: not incorrect, but can increase lock contention during worker startup.
 
 ## Redundant / unused
 
-9. Unused dependency: `parking_lot`.
-- Location: `Cargo.toml:19`
-- Evidence: no references in `src/` or `examples/`.
+9. [DONE] Unused dependency: `parking_lot`.
+- Fixed in: `src/pool.rs` (runtime pool synchronization now uses `parking_lot::Mutex` / `parking_lot::RwLock`).
+- Previous location: `Cargo.toml:19`
+- Previous issue: dependency was present but not used.
 
 10. Potentially over-broad Tokio feature set.
 - Location: `Cargo.toml:24`
@@ -63,4 +64,4 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 1. Fix pending Promise behavior (item 1).
 2. Decide and implement policy for uncaught queued job errors (item 2).
 3. Tighten HTTP semantics (items 5, 6).
-4. Remove unused dependency and reduce Tokio features if desired (items 9, 10).
+4. Reduce Tokio feature set if desired (item 10).

@@ -7,11 +7,12 @@ use crate::{
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
 };
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -116,7 +117,7 @@ struct MechanicsPoolShared {
     rx: Receiver<PoolMessage>,
     exit_tx: Sender<WorkerExit>,
     exit_rx: Receiver<WorkerExit>,
-    workers: Mutex<HashMap<usize, thread::JoinHandle<()>>>,
+    workers: RwLock<HashMap<usize, thread::JoinHandle<()>>>,
     next_worker_id: AtomicUsize,
     closed: AtomicBool,
     restart_blocked: AtomicBool,
@@ -127,18 +128,16 @@ struct MechanicsPoolShared {
 }
 
 impl MechanicsPoolShared {
-    fn workers_guard(&self) -> MutexGuard<'_, HashMap<usize, thread::JoinHandle<()>>> {
-        match self.workers.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+    fn workers_read(&self) -> RwLockReadGuard<'_, HashMap<usize, thread::JoinHandle<()>>> {
+        self.workers.read()
+    }
+
+    fn workers_write(&self) -> RwLockWriteGuard<'_, HashMap<usize, thread::JoinHandle<()>>> {
+        self.workers.write()
     }
 
     fn restart_guard_guard(&self) -> MutexGuard<'_, RestartGuard> {
-        match self.restart_guard.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        }
+        self.restart_guard.lock()
     }
 
     fn spawn_worker(shared: &Arc<Self>) -> Result<usize, MechanicsError> {
@@ -211,7 +210,7 @@ impl MechanicsPoolShared {
                 MechanicsError::runtime_pool(format!("failed to spawn worker thread: {e}"))
             })?;
 
-        let mut workers = shared.workers_guard();
+        let mut workers = shared.workers_write();
         workers.insert(worker_id, handle);
         let _ = start_tx.send(());
         shared.restart_blocked.store(false, Ordering::Release);
@@ -219,7 +218,7 @@ impl MechanicsPoolShared {
     }
 
     fn live_workers(&self) -> usize {
-        self.workers_guard().len()
+        self.workers_read().len()
     }
 }
 
@@ -278,7 +277,7 @@ impl MechanicsPool {
             rx,
             exit_tx,
             exit_rx,
-            workers: Mutex::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
             next_worker_id: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             restart_blocked: AtomicBool::new(false),
@@ -310,7 +309,7 @@ impl MechanicsPool {
                     {
                         Ok(event) => {
                             let maybe_old = {
-                                let mut workers = supervisor_shared.workers_guard();
+                                let mut workers = supervisor_shared.workers_write();
                                 workers.remove(&event.worker_id)
                             };
                             if let Some(handle) = maybe_old {
@@ -530,7 +529,7 @@ impl Drop for MechanicsPool {
             let _ = supervisor.join();
         }
 
-        let mut workers = self.shared.workers_guard();
+        let mut workers = self.shared.workers_write();
         for (_, handle) in workers.drain() {
             let _ = handle.join();
         }
@@ -629,7 +628,7 @@ mod tests {
             rx,
             exit_tx,
             exit_rx,
-            workers: Mutex::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
             next_worker_id: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             restart_blocked: AtomicBool::new(false),
@@ -781,7 +780,7 @@ mod tests {
         let pool = synthetic_pool(8, limits);
 
         {
-            let mut workers = pool.shared.workers.lock().expect("workers mutex poisoned");
+            let mut workers = pool.shared.workers.write();
             workers.insert(0, thread::spawn(|| {}));
         }
 
@@ -805,7 +804,7 @@ mod tests {
             rx,
             exit_tx,
             exit_rx,
-            workers: Mutex::new(HashMap::new()),
+            workers: RwLock::new(HashMap::new()),
             next_worker_id: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
             restart_blocked: AtomicBool::new(false),
