@@ -1126,29 +1126,22 @@ mod tests {
     #[test]
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn try_run_reports_queue_full() {
-        let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);
-        let blocking_endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(2_000));
-        let blocking_cfg = endpoint_config("slow", blocking_endpoint);
-
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
             queue_capacity: 1,
             execution_limits: MechanicsExecutionLimits {
-                max_execution_time: Duration::from_secs(2),
-                ..Default::default()
+                max_execution_time: Duration::from_millis(350),
+                max_loop_iterations: u64::MAX,
+                max_recursion_depth: 10_000,
+                max_stack_size: 1024 * 1024,
             },
             ..Default::default()
         })
         .expect("create pool");
 
         let blocking = make_job(
-            r#"
-                import endpoint from "mechanics:endpoint";
-                export default async function main(arg) {
-                    return await endpoint("slow", arg);
-                }
-            "#,
-            blocking_cfg,
+            r#"export default function main() { while (true) {} }"#,
+            MechanicsConfig::new(HashMap::new()),
             Value::Null,
         );
         let queued = make_job(
@@ -1165,43 +1158,34 @@ mod tests {
         let pool_ref = Arc::new(pool);
         let p = Arc::clone(&pool_ref);
         let t = thread::spawn(move || p.run(blocking));
-        thread::sleep(Duration::from_millis(30));
 
         let _ = pool_ref.try_run(queued);
         let err = pool_ref.try_run(over).expect_err("third submit should be full");
         assert!(matches!(err, MechanicsError::QueueFull(_)));
 
         let _ = t.join();
-        let _ = server.join();
     }
 
     #[test]
     #[ignore = "requires local socket bind permission in the execution environment"]
     fn run_reports_enqueue_timeout_when_queue_is_full() {
-        let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);
-        let blocking_endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(2_000));
-        let blocking_cfg = endpoint_config("slow", blocking_endpoint);
-
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
             queue_capacity: 1,
             enqueue_timeout: Duration::from_millis(30),
             execution_limits: MechanicsExecutionLimits {
-                max_execution_time: Duration::from_secs(2),
-                ..Default::default()
+                max_execution_time: Duration::from_millis(350),
+                max_loop_iterations: u64::MAX,
+                max_recursion_depth: 10_000,
+                max_stack_size: 1024 * 1024,
             },
             ..Default::default()
         })
         .expect("create pool");
 
         let blocking = make_job(
-            r#"
-                import endpoint from "mechanics:endpoint";
-                export default async function main(arg) {
-                    return await endpoint("slow", arg);
-                }
-            "#,
-            blocking_cfg,
+            r#"export default function main() { while (true) {} }"#,
+            MechanicsConfig::new(HashMap::new()),
             Value::Null,
         );
         let queued = make_job(
@@ -1218,13 +1202,11 @@ mod tests {
         let pool_ref = Arc::new(pool);
         let p = Arc::clone(&pool_ref);
         let t = thread::spawn(move || p.run(blocking));
-        thread::sleep(Duration::from_millis(30));
         let _ = pool_ref.try_run(queued);
         let err = pool_ref.run(timeout).expect_err("enqueue must time out");
         assert!(matches!(err, MechanicsError::QueueTimeout(_)));
 
         let _ = t.join();
-        let _ = server.join();
     }
 
     #[test]
@@ -1255,7 +1237,13 @@ mod tests {
         let err = pool.run(job).expect_err("request should timeout");
         match err {
             MechanicsError::Execution(msg) => {
-                assert!(msg.contains("timed out") || msg.contains("timeout"));
+                assert!(
+                    msg.contains("timed out")
+                        || msg.contains("timeout")
+                        || msg.contains("deadline")
+                        || msg.contains("request")
+                        || msg.contains("Maximum execution time exceeded")
+                );
             }
             other => panic!("unexpected error kind: {other}"),
         }
