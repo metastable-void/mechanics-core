@@ -6,6 +6,7 @@ use crate::{
 };
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
+    unbounded,
 };
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use serde_json::Value;
@@ -340,8 +341,7 @@ impl MechanicsPool {
             .map_err(|e| MechanicsError::runtime_pool(e.to_string()))?;
 
         let (tx, rx) = bounded(config.queue_capacity);
-        let (exit_tx, exit_rx) =
-            bounded::<WorkerExit>(config.worker_count.saturating_mul(4).max(8));
+        let (exit_tx, exit_rx) = unbounded::<WorkerExit>();
 
         let shared = Arc::new(MechanicsPoolShared {
             tx,
@@ -815,6 +815,20 @@ mod tests {
         let err = match result {
             Err(err) => err,
             Ok(_) => panic!("worker runtime init failure must fail pool creation"),
+        };
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+    }
+
+    #[test]
+    fn pool_new_fails_promptly_when_many_workers_fail_startup() {
+        let result = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 64,
+            force_worker_runtime_init_failure: true,
+            ..Default::default()
+        });
+        let err = match result {
+            Err(err) => err,
+            Ok(_) => panic!("startup failures must fail pool creation"),
         };
         assert!(matches!(err, MechanicsError::RuntimePool(_)));
     }
