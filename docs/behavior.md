@@ -68,6 +68,7 @@ Timeout behavior:
 - bounded job queue (`queue_capacity`),
 - N worker threads (`worker_count`),
 - supervisor thread with restart rate limiter (`restart_window`, `max_restarts_in_window`).
+- If any worker fails during startup runtime initialization, construction fails with `MechanicsError::RuntimePool`.
 
 ### `run(job)`
 - Blocks waiting for enqueue up to `enqueue_timeout`.
@@ -84,6 +85,7 @@ Timeout behavior:
 Dropping `MechanicsPool`:
 - marks pool closed,
 - cancels queued jobs best-effort,
+- reaps already-finished worker handles before shutdown signaling,
 - sends shutdown messages to workers,
 - joins supervisor and worker threads.
 

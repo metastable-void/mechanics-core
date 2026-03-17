@@ -40,6 +40,8 @@ pub struct MechanicsPoolConfig {
     pub restart_window: Duration,
     /// Maximum automatic worker restarts allowed within `restart_window`.
     pub max_restarts_in_window: usize,
+    #[cfg(test)]
+    force_worker_runtime_init_failure: bool,
 }
 
 impl Default for MechanicsPoolConfig {
@@ -56,6 +58,8 @@ impl Default for MechanicsPoolConfig {
             default_http_timeout_ms: Some(120_000),
             restart_window: Duration::from_secs(10),
             max_restarts_in_window: 16,
+            #[cfg(test)]
+            force_worker_runtime_init_failure: false,
         }
     }
 }
@@ -125,6 +129,8 @@ struct MechanicsPoolShared {
     execution_limits: MechanicsExecutionLimits,
     default_http_timeout_ms: Option<u64>,
     reqwest_client: reqwest::Client,
+    #[cfg(test)]
+    force_worker_runtime_init_failure: bool,
 }
 
 impl MechanicsPoolShared {
@@ -140,28 +146,70 @@ impl MechanicsPoolShared {
         self.restart_guard.lock()
     }
 
+    fn remove_worker_handle(&self, worker_id: usize) -> Option<thread::JoinHandle<()>> {
+        let mut workers = self.workers_write();
+        workers.remove(&worker_id)
+    }
+
+    fn reap_finished_workers(&self) {
+        let finished_ids: Vec<usize> = {
+            let workers = self.workers_read();
+            workers
+                .iter()
+                .filter_map(|(id, handle)| handle.is_finished().then_some(*id))
+                .collect()
+        };
+        if finished_ids.is_empty() {
+            return;
+        }
+
+        let mut finished_handles = Vec::with_capacity(finished_ids.len());
+        {
+            let mut workers = self.workers_write();
+            for id in finished_ids {
+                if let Some(handle) = workers.remove(&id) {
+                    finished_handles.push(handle);
+                }
+            }
+        }
+        for handle in finished_handles {
+            let _ = handle.join();
+        }
+    }
+
     fn spawn_worker(shared: &Arc<Self>) -> Result<usize, MechanicsError> {
         let worker_id = shared.next_worker_id.fetch_add(1, Ordering::Relaxed);
 
         let rx = shared.rx.clone();
         let exit_tx = shared.exit_tx.clone();
-        let (start_tx, start_rx) = bounded::<()>(0);
+        let (ready_tx, ready_rx) = bounded::<Result<(), MechanicsError>>(1);
         let reqwest_client = shared.reqwest_client.clone();
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
+        #[cfg(test)]
+        let force_runtime_init_failure = shared.force_worker_runtime_init_failure;
 
         let handle = thread::Builder::new()
             .name(format!("mechanics-worker-{worker_id}"))
             .spawn(move || {
-                if start_rx.recv().is_err() {
-                    let _ = exit_tx.send(WorkerExit { worker_id });
-                    return;
-                }
-
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    #[cfg(test)]
+                    if force_runtime_init_failure {
+                        let _ = ready_tx.send(Err(MechanicsError::runtime_pool(
+                            "forced runtime initialization failure for tests",
+                        )));
+                        return;
+                    }
+
                     let mut runtime = match RuntimeInternal::new_with_client(reqwest_client) {
-                        Ok(runtime) => runtime,
-                        Err(_) => return,
+                        Ok(runtime) => {
+                            let _ = ready_tx.send(Ok(()));
+                            runtime
+                        }
+                        Err(err) => {
+                            let _ = ready_tx.send(Err(err));
+                            return;
+                        }
                     };
                     runtime.set_execution_limits(execution_limits);
                     runtime.set_default_endpoint_timeout_ms(default_http_timeout_ms);
@@ -200,6 +248,8 @@ impl MechanicsPoolShared {
                 if run.is_err() {
                     // If the worker panicked outside task execution (runtime setup/loop),
                     // notify a synthetic panic event via restart path.
+                    let _ =
+                        ready_tx.send(Err(MechanicsError::panic("worker panicked during startup")));
                     let _ = exit_tx.send(WorkerExit { worker_id });
                     return;
                 }
@@ -214,12 +264,31 @@ impl MechanicsPoolShared {
             let mut workers = shared.workers_write();
             workers.insert(worker_id, handle);
         }
-        let _ = start_tx.send(());
-        shared.restart_blocked.store(false, Ordering::Release);
-        Ok(worker_id)
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {
+                shared.restart_blocked.store(false, Ordering::Release);
+                Ok(worker_id)
+            }
+            Ok(Err(err)) => {
+                if let Some(handle) = shared.remove_worker_handle(worker_id) {
+                    let _ = handle.join();
+                }
+                Err(err)
+            }
+            Err(_) => {
+                if let Some(handle) = shared.remove_worker_handle(worker_id) {
+                    let _ = handle.join();
+                }
+                Err(MechanicsError::runtime_pool(
+                    "worker exited before startup completed",
+                ))
+            }
+        }
     }
 
     fn live_workers(&self) -> usize {
+        self.reap_finished_workers();
         self.workers_read().len()
     }
 }
@@ -290,6 +359,8 @@ impl MechanicsPool {
             execution_limits: config.execution_limits,
             default_http_timeout_ms: config.default_http_timeout_ms,
             reqwest_client,
+            #[cfg(test)]
+            force_worker_runtime_init_failure: config.force_worker_runtime_init_failure,
         });
 
         for _ in 0..config.worker_count {
@@ -638,6 +709,8 @@ mod tests {
             execution_limits,
             default_http_timeout_ms: None,
             reqwest_client: reqwest::Client::new(),
+            #[cfg(test)]
+            force_worker_runtime_init_failure: false,
         });
 
         MechanicsPool {
@@ -732,6 +805,21 @@ mod tests {
     }
 
     #[test]
+    fn pool_new_fails_when_worker_runtime_init_fails() {
+        let result = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            force_worker_runtime_init_failure: true,
+            ..Default::default()
+        });
+
+        let err = match result {
+            Err(err) => err,
+            Ok(_) => panic!("worker runtime init failure must fail pool creation"),
+        };
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+    }
+
+    #[test]
     fn run_and_run_try_enqueue_fail_when_pool_closed() {
         let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
         pool.shared.closed.store(true, Ordering::Release);
@@ -814,6 +902,8 @@ mod tests {
             execution_limits: MechanicsExecutionLimits::default(),
             default_http_timeout_ms: None,
             reqwest_client: reqwest::Client::new(),
+            #[cfg(test)]
+            force_worker_runtime_init_failure: false,
         });
 
         let pool = MechanicsPool {
@@ -873,6 +963,60 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("drop should send canceled error");
         assert!(matches!(canceled, Err(MechanicsError::Canceled(_))));
+    }
+
+    #[test]
+    fn drop_does_not_block_when_workers_map_contains_finished_threads() {
+        let (tx, rx) = bounded(1);
+        let (exit_tx, exit_rx) = bounded(8);
+        let shared = Arc::new(MechanicsPoolShared {
+            tx,
+            rx,
+            exit_tx,
+            exit_rx,
+            workers: RwLock::new(HashMap::new()),
+            next_worker_id: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            restart_blocked: AtomicBool::new(false),
+            restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+            execution_limits: MechanicsExecutionLimits::default(),
+            default_http_timeout_ms: None,
+            reqwest_client: reqwest::Client::new(),
+            #[cfg(test)]
+            force_worker_runtime_init_failure: false,
+        });
+
+        {
+            let mut workers = shared.workers.write();
+            workers.insert(0, thread::spawn(|| {}));
+            workers.insert(1, thread::spawn(|| {}));
+        }
+        loop {
+            let all_finished = {
+                let workers = shared.workers.read();
+                workers.values().all(thread::JoinHandle::is_finished)
+            };
+            if all_finished {
+                break;
+            }
+            thread::yield_now();
+        }
+
+        let pool = MechanicsPool {
+            shared,
+            enqueue_timeout: Duration::from_millis(10),
+            run_timeout: Duration::from_millis(50),
+            supervisor: None,
+        };
+
+        let (done_tx, done_rx) = bounded::<()>(1);
+        thread::spawn(move || {
+            drop(pool);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("drop should not block with stale finished worker handles");
     }
 
     #[test]
