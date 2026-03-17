@@ -253,41 +253,42 @@ impl MechanicsState {
 }
 
 #[derive(Debug, Clone)]
-pub struct MechanicsError {
-    msg: Cow<'static, str>,
+pub enum MechanicsError {
+    Execution(Cow<'static, str>),
+    RuntimePool(Cow<'static, str>),
 }
 
 impl MechanicsError {
-    pub fn new<M: Into<Cow<'static, str>>>(msg: M) -> Self {
-        Self {
-            msg: msg.into(),
+    pub fn execution<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::Execution(msg.into())
+    }
+
+    pub fn runtime_pool<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::RuntimePool(msg.into())
+    }
+
+    pub fn msg(&self) -> &str {
+        match self {
+            Self::Execution(msg) => msg.as_ref(),
+            Self::RuntimePool(msg) => msg.as_ref(),
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match &self {
+            Self::Execution(_) => "MechanicsError::Execution",
+            Self::RuntimePool(_) => "MechanicsError::RuntimePool",
         }
     }
 }
 
 impl Display for MechanicsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MechanicsError: {}", self.msg)
+        write!(f, "{}: {}", self.kind(), self.msg())
     }
 }
 
 impl std::error::Error for MechanicsError {}
-
-impl From<String> for MechanicsError {
-    fn from(value: String) -> Self {
-        Self {
-            msg: Cow::Owned(value),
-        }
-    }
-}
-
-impl From<&'static str> for MechanicsError {
-    fn from(value: &'static str) -> Self {
-        Self {
-            msg: Cow::Borrowed(value),
-        }
-    }
-}
 
 /// Script runtime that hosts a Boa context and exposes helper modules.
 pub struct RuntimeInternal {
@@ -397,7 +398,7 @@ impl RuntimeInternal {
             },
 
             Err(e) => {
-                Err(e.to_string().into())
+                Err(MechanicsError::execution(e.to_string()))
             },
         }
     }
