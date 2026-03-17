@@ -40,6 +40,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
         restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
         reqwest_client: reqwest::Client::new(),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,

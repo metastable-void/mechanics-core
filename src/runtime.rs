@@ -64,6 +64,9 @@ pub(crate) struct MechanicsState {
 
     #[unsafe_ignore_trace]
     default_timeout_ms: Option<u64>,
+
+    #[unsafe_ignore_trace]
+    default_response_max_bytes: Option<usize>,
 }
 
 impl MechanicsState {
@@ -71,11 +74,13 @@ impl MechanicsState {
         config: Arc<MechanicsConfig>,
         client: reqwest::Client,
         default_timeout_ms: Option<u64>,
+        default_response_max_bytes: Option<usize>,
     ) -> Self {
         Self {
             config,
             reqwest_client: client,
             default_timeout_ms,
+            default_response_max_bytes,
         }
     }
 
@@ -85,6 +90,10 @@ impl MechanicsState {
 
     pub(crate) fn default_timeout_ms(&self) -> Option<u64> {
         self.default_timeout_ms
+    }
+
+    pub(crate) fn default_response_max_bytes(&self) -> Option<usize> {
+        self.default_response_max_bytes
     }
 }
 
@@ -96,6 +105,7 @@ pub(crate) struct RuntimeInternal {
     hooks: Rc<RuntimeHostHooks>,
     execution_limits: MechanicsExecutionLimits,
     default_endpoint_timeout_ms: Option<u64>,
+    default_endpoint_response_max_bytes: Option<usize>,
 }
 
 impl RuntimeInternal {
@@ -148,6 +158,7 @@ impl RuntimeInternal {
             hooks,
             execution_limits: MechanicsExecutionLimits::default(),
             default_endpoint_timeout_ms: None,
+            default_endpoint_response_max_bytes: None,
         })
     }
 
@@ -157,6 +168,10 @@ impl RuntimeInternal {
 
     pub(crate) fn set_default_endpoint_timeout_ms(&mut self, timeout_ms: Option<u64>) {
         self.default_endpoint_timeout_ms = timeout_ms;
+    }
+
+    pub(crate) fn set_default_endpoint_response_max_bytes(&mut self, max_bytes: Option<usize>) {
+        self.default_endpoint_response_max_bytes = max_bytes;
     }
 
     /// Parses and evaluates a module, invokes its default export, and returns the JS result.
@@ -169,6 +184,7 @@ impl RuntimeInternal {
             config,
             self.reqwest_client.clone(),
             self.default_endpoint_timeout_ms,
+            self.default_endpoint_response_max_bytes,
         );
 
         let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)?;

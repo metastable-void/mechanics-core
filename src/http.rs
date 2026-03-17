@@ -166,6 +166,8 @@ pub struct HttpEndpoint {
     request_body_type: Option<EndpointBodyType>,
     #[serde(default)]
     response_body_type: EndpointBodyType,
+    #[serde(default)]
+    response_max_bytes: Option<usize>,
     timeout_ms: Option<u64>,
     #[serde(default)]
     allow_non_success_status: bool,
@@ -188,6 +190,7 @@ impl HttpEndpoint {
             headers,
             request_body_type: None,
             response_body_type: EndpointBodyType::Json,
+            response_max_bytes: None,
             timeout_ms: None,
             allow_non_success_status: false,
         }
@@ -218,6 +221,15 @@ impl HttpEndpoint {
     /// Defaults to JSON.
     pub fn with_response_body_type(mut self, body_type: EndpointBodyType) -> Self {
         self.response_body_type = body_type;
+        self
+    }
+
+    /// Sets a per-endpoint maximum response-body size in bytes.
+    ///
+    /// If this is `Some`, it overrides the pool default response limit.
+    /// If this is `None`, the pool default response limit is used.
+    pub fn with_response_max_bytes(mut self, response_max_bytes: Option<usize>) -> Self {
+        self.response_max_bytes = response_max_bytes;
         self
     }
 
@@ -422,10 +434,12 @@ impl HttpEndpoint {
         &self,
         client: reqwest::Client,
         default_timeout_ms: Option<u64>,
+        default_response_max_bytes: Option<usize>,
         options: &EndpointCallOptions,
     ) -> std::io::Result<EndpointResponseBody> {
         let url = self.build_url(options)?;
         let timeout_ms = self.timeout_ms.or(default_timeout_ms);
+        let response_max_bytes = self.response_max_bytes.or(default_response_max_bytes);
         let supports_body = self.method.supports_request_body();
         let request_body_type = self.effective_request_body_type();
 
@@ -500,7 +514,22 @@ impl HttpEndpoint {
             res.error_for_status().map_err(into_io_error)?
         };
 
-        let bytes = res.bytes().await.map_err(into_io_error)?;
+        if let (Some(max), Some(content_len)) = (response_max_bytes, res.content_length())
+            && content_len > max as u64
+        {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "response body exceeds configured max bytes ({max}): content-length is {content_len}"
+                ),
+            ));
+        }
+
+        let mut bytes = Vec::new();
+        let mut res = res;
+        while let Some(chunk) = res.chunk().await.map_err(into_io_error)? {
+            extend_body_with_limit(&mut bytes, &chunk, response_max_bytes)?;
+        }
         if bytes.is_empty() {
             return Ok(EndpointResponseBody::Empty);
         }
@@ -516,9 +545,30 @@ impl HttpEndpoint {
                     .to_owned();
                 Ok(EndpointResponseBody::Utf8(data))
             }
-            EndpointBodyType::Bytes => Ok(EndpointResponseBody::Bytes(bytes.to_vec())),
+            EndpointBodyType::Bytes => Ok(EndpointResponseBody::Bytes(bytes)),
         }
     }
+}
+
+fn extend_body_with_limit(
+    target: &mut Vec<u8>,
+    chunk: &[u8],
+    max_bytes: Option<usize>,
+) -> std::io::Result<()> {
+    if let Some(max) = max_bytes {
+        let next_len = target.len().checked_add(chunk.len()).ok_or(Error::new(
+            ErrorKind::InvalidData,
+            "response body size overflow while enforcing max bytes limit",
+        ))?;
+        if next_len > max {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("response body exceeds configured max bytes ({max})"),
+            ));
+        }
+    }
+    target.extend_from_slice(chunk);
+    Ok(())
 }
 
 #[derive(Debug)]

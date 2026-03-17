@@ -113,6 +113,80 @@ fn endpoint_specific_timeout_overrides_pool_default() {
 
 #[test]
 #[ignore = "requires local socket bind permission in the execution environment"]
+fn endpoint_uses_pool_default_response_max_bytes() {
+    let large_json = format!(r#"{{"blob":"{}"}}"#, "x".repeat(128));
+    let (url, server) = spawn_json_server_owned(Duration::from_millis(0), large_json);
+    let endpoint = HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new());
+    let config = endpoint_config("slow", endpoint);
+
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        default_http_response_max_bytes: Some(64),
+        execution_limits: MechanicsExecutionLimits {
+            max_execution_time: Duration::from_secs(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("slow", { body: arg });
+            }
+        "#;
+    let job = make_job(source, config, json!({"hello":"world"}));
+    let err = pool
+        .run(job)
+        .expect_err("request should fail because response body is too large");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("exceeds configured max bytes"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+
+    let _ = server.join();
+}
+
+#[test]
+#[ignore = "requires local socket bind permission in the execution environment"]
+fn endpoint_response_max_bytes_overrides_pool_default() {
+    let large_json = format!(r#"{{"blob":"{}"}}"#, "x".repeat(128));
+    let (url, server) = spawn_json_server_owned(Duration::from_millis(0), large_json);
+    let endpoint = HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new())
+        .with_response_max_bytes(Some(512));
+    let config = endpoint_config("slow", endpoint);
+
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        default_http_response_max_bytes: Some(64),
+        execution_limits: MechanicsExecutionLimits {
+            max_execution_time: Duration::from_secs(2),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("slow", { body: arg });
+            }
+        "#;
+    let job = make_job(source, config, json!({"hello":"world"}));
+    let value = pool
+        .run(job)
+        .expect("endpoint-level response max bytes should allow success");
+    assert_eq!(value["blob"].as_str().map(str::len), Some(128));
+
+    let _ = server.join();
+}
+
+#[test]
+#[ignore = "requires local socket bind permission in the execution environment"]
 fn endpoint_non_success_status_is_error_by_default() {
     let (url, server) =
         spawn_json_server_with_status(Duration::from_millis(0), 500, r#"{"ok":false}"#);

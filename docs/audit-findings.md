@@ -8,19 +8,21 @@ Audit pass covered:
 
 Validation run:
 - `cargo clippy --all-targets --all-features` (pass).
-- `cargo test --all-targets` (pass: 42 passed, 0 failed, 17 ignored).
-- `cargo test --all-targets -- --ignored` (pass: 17 passed, 0 failed; run outside sandbox restrictions).
+- `cargo test --all-targets` (pass: 45 passed, 0 failed, 19 ignored).
+- `cargo test --all-targets -- --ignored` (pass: 19 passed, 0 failed; run outside sandbox restrictions).
 
 ## Current findings
 
 ### 1) Unbounded HTTP response buffering can cause memory blow-up
 - Severity: medium
-- Status: open
-- Evidence: [`src/http.rs:503`](/home/menhera/projects/mechanics-core/src/http.rs:503) uses `res.bytes().await`, which buffers the full response body in memory before decoding.
-- Impact:
-- A misconfigured or hostile endpoint can return very large payloads and force high memory usage/OOM in worker threads.
-- Suggested fix:
-- Add configurable response size limits (pool-level default + per-endpoint override), enforce while streaming (`bytes_stream`) before full materialization.
+- Status: done (2026-03-18)
+- Resolution:
+- Added pool-level default response cap `MechanicsPoolConfig.default_http_response_max_bytes` (default: `8 MiB`).
+- Added per-endpoint override `HttpEndpoint::with_response_max_bytes(...)` / `response_max_bytes` config field.
+- Switched response read path to chunked accumulation with limit enforcement, plus early `Content-Length` guard.
+- Verification:
+- Unit tests: [`src/http/tests/response_limit.rs`](/home/menhera/projects/mechanics-core/src/http/tests/response_limit.rs)
+- Integration tests: [`src/pool/tests/endpoint_network.rs`](/home/menhera/projects/mechanics-core/src/pool/tests/endpoint_network.rs) (`endpoint_uses_pool_default_response_max_bytes`, `endpoint_response_max_bytes_overrides_pool_default`)
 
 ### 2) `mechanics:form-urlencoded.encode` output order is non-deterministic
 - Severity: low

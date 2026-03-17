@@ -365,7 +365,12 @@ pub(super) fn install_synthetic_modules(loader: &Rc<CustomModuleLoader>, context
                     ))?;
 
             let res = endpoint
-                .execute(state.reqwest(), state.default_timeout_ms(), &req_options)
+                .execute(
+                    state.reqwest(),
+                    state.default_timeout_ms(),
+                    state.default_response_max_bytes(),
+                    &req_options,
+                )
                 .await
                 .map_err(JsError::from_rust)?;
 

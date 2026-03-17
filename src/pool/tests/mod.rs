@@ -67,11 +67,53 @@ fn spawn_json_server_with_status(
     (format!("http://{addr}"), handle)
 }
 
+fn spawn_json_server_with_status_owned(
+    delay: Duration,
+    status: u16,
+    response_json: String,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let addr = listener.local_addr().expect("read local addr");
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept one connection");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set read timeout");
+
+        let mut buf = [0_u8; 4096];
+        let _ = stream.read(&mut buf);
+        if !delay.is_zero() {
+            thread::sleep(delay);
+        }
+
+        let body = response_json.as_bytes();
+        let response = format!(
+            "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            http_status_reason(status),
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write headers");
+        stream.write_all(body).expect("write body");
+        let _ = stream.flush();
+    });
+
+    (format!("http://{addr}"), handle)
+}
+
 fn spawn_json_server(
     delay: Duration,
     response_json: &'static str,
 ) -> (String, thread::JoinHandle<()>) {
     spawn_json_server_with_status(delay, 200, response_json)
+}
+
+fn spawn_json_server_owned(
+    delay: Duration,
+    response_json: String,
+) -> (String, thread::JoinHandle<()>) {
+    spawn_json_server_with_status_owned(delay, 200, response_json)
 }
 
 fn endpoint_config(name: &str, endpoint: HttpEndpoint) -> MechanicsConfig {
@@ -98,6 +140,7 @@ fn synthetic_pool(
         restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
         execution_limits,
         default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
         reqwest_client: reqwest::Client::new(),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,

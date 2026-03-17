@@ -40,6 +40,11 @@ pub struct MechanicsPoolConfig {
     ///
     /// Per-endpoint timeout set via [`HttpEndpoint::with_timeout_ms`] overrides this value.
     pub default_http_timeout_ms: Option<u64>,
+    /// Default maximum HTTP response-body size in bytes for endpoint calls.
+    ///
+    /// Per-endpoint limit set via [`HttpEndpoint::with_response_max_bytes`] overrides this value.
+    /// `None` means no global response-body size cap.
+    pub default_http_response_max_bytes: Option<usize>,
     /// Sliding window duration used by worker restart rate limiting.
     pub restart_window: Duration,
     /// Maximum automatic worker restarts allowed within `restart_window`.
@@ -61,6 +66,7 @@ impl Default for MechanicsPoolConfig {
             run_timeout: Duration::from_secs(30),
             execution_limits: MechanicsExecutionLimits::default(),
             default_http_timeout_ms: Some(120_000),
+            default_http_response_max_bytes: Some(8 * 1024 * 1024),
             restart_window: Duration::from_secs(10),
             max_restarts_in_window: 16,
             #[cfg(test)]
@@ -133,6 +139,7 @@ struct MechanicsPoolShared {
     restart_guard: Mutex<RestartGuard>,
     execution_limits: MechanicsExecutionLimits,
     default_http_timeout_ms: Option<u64>,
+    default_http_response_max_bytes: Option<usize>,
     reqwest_client: reqwest::Client,
     #[cfg(test)]
     force_worker_runtime_init_failure: bool,
@@ -191,6 +198,7 @@ impl MechanicsPoolShared {
         let reqwest_client = shared.reqwest_client.clone();
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
+        let default_http_response_max_bytes = shared.default_http_response_max_bytes;
         #[cfg(test)]
         let force_runtime_init_failure = shared.force_worker_runtime_init_failure;
 
@@ -218,6 +226,8 @@ impl MechanicsPoolShared {
                     };
                     runtime.set_execution_limits(execution_limits);
                     runtime.set_default_endpoint_timeout_ms(default_http_timeout_ms);
+                    runtime
+                        .set_default_endpoint_response_max_bytes(default_http_response_max_bytes);
 
                     loop {
                         match rx.recv() {
@@ -372,6 +382,7 @@ impl MechanicsPool {
             )),
             execution_limits: config.execution_limits,
             default_http_timeout_ms: config.default_http_timeout_ms,
+            default_http_response_max_bytes: config.default_http_response_max_bytes,
             reqwest_client,
             #[cfg(test)]
             force_worker_runtime_init_failure: config.force_worker_runtime_init_failure,

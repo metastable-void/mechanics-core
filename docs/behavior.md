@@ -66,6 +66,7 @@ Resolution behavior:
 - Unknown JS `queries` keys are rejected unless referenced by configured slotted query specs.
 - Request body serialization uses endpoint `request_body_type`.
 - Response body parsing uses endpoint `response_body_type`.
+- Response body size is bounded by endpoint `response_max_bytes` if set, otherwise by pool default `default_http_response_max_bytes`.
 - Empty response bodies are always returned to JS as `null`.
 - Configured headers are validated; invalid names/values fail the call.
 - If missing, `User-Agent` is injected automatically.
@@ -88,6 +89,7 @@ Config shape is JSON-friendly and snake_case (`serde`):
 - endpoint body directives:
 - `request_body_type`: `"json" | "utf8" | "bytes"` (method defaults apply).
 - `response_body_type`: `"json" | "utf8" | "bytes"` (default `"json"`).
+- `response_max_bytes`: optional max response-body size in bytes (`null` means use pool default).
 - `url_template` is a full URL template string and placeholder names must be unique.
 - placeholder/slot names are limited to ASCII letters, digits, and `_`.
 - `url_param_specs` maps placeholder names to constraints and optional defaults.
@@ -146,6 +148,7 @@ Minimal endpoint config example (JSON):
       },
       "request_body_type": "json",
       "response_body_type": "json",
+      "response_max_bytes": 1048576,
       "timeout_ms": 5000,
       "allow_non_success_status": false
     }
@@ -197,6 +200,11 @@ Runtime registers a synthetic module named `mechanics:rand` with default export:
 Timeout behavior:
 - Endpoint timeout = `HttpEndpoint::with_timeout_ms(...)` if set,
 - else pool default `MechanicsPoolConfig.default_http_timeout_ms`.
+
+Response-size behavior:
+- Endpoint response max bytes = `HttpEndpoint::with_response_max_bytes(...)` if set,
+- else pool default `MechanicsPoolConfig.default_http_response_max_bytes` (default: `8 MiB`),
+- exceeding the effective limit fails the endpoint call with an execution error.
 
 ## Pool and queue behavior
 `MechanicsPool::new(config)` creates:
