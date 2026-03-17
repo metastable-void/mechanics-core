@@ -1,4 +1,6 @@
 
+use std::sync::Arc;
+
 use mechanics_core::{MechanicsConfig, MechanicsJob, RuntimeInternal};
 
 fn main() -> std::io::Result<()> {
@@ -15,9 +17,9 @@ fn main() -> std::io::Result<()> {
     let config: MechanicsConfig = serde_json::from_str(&config_json).map_err(|e| std::io::Error::other(e))?;
     let mut runtime = RuntimeInternal::new();
     let job = MechanicsJob {
-        mod_source: std::borrow::Cow::Borrowed(&js_source),
-        arg: serde_json::Value::Null,
-        config,
+        mod_source: js_source.into(),
+        arg: Arc::new(serde_json::Value::Null),
+        config: Arc::new(config),
     };
     let value = runtime.run_source(job).map_err(std::io::Error::other)?;
     let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;

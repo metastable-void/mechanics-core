@@ -9,7 +9,7 @@ use reqwest::header::{HeaderMap, HeaderName};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use tokio::task;
-use std::{borrow::Cow, cell::RefCell, collections::{BTreeMap, HashMap, VecDeque}, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, collections::{BTreeMap, HashMap, VecDeque}, fmt::Display, rc::Rc, sync::Arc};
 use std::ops::DerefMut;
 
 /// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
@@ -217,10 +217,61 @@ impl ModuleLoader for CustomModuleLoader {
 }
 
 #[derive(Debug, Clone)]
-pub struct MechanicsJob<'a> {
-    pub mod_source: Cow<'a, str>,
-    pub arg: Value,
-    pub config: MechanicsConfig,
+pub struct MechanicsJob {
+    pub mod_source: Arc<str>,
+    pub arg: Arc<Value>,
+    pub config: Arc<MechanicsConfig>,
+}
+
+#[derive(JsData, Finalize, Trace, Clone, Debug)]
+pub(crate) struct MechanicsState {
+    #[unsafe_ignore_trace]
+    config: Arc<MechanicsConfig>,
+}
+
+impl MechanicsState {
+    pub(crate) fn new(config: Arc<MechanicsConfig>) -> Self {
+        Self {
+            config,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MechanicsError {
+    msg: Cow<'static, str>,
+}
+
+impl MechanicsError {
+    pub fn new<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self {
+            msg: msg.into(),
+        }
+    }
+}
+
+impl Display for MechanicsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MechanicsError: {}", self.msg)
+    }
+}
+
+impl std::error::Error for MechanicsError {}
+
+impl From<String> for MechanicsError {
+    fn from(value: String) -> Self {
+        Self {
+            msg: Cow::Owned(value),
+        }
+    }
+}
+
+impl From<&'static str> for MechanicsError {
+    fn from(value: &'static str) -> Self {
+        Self {
+            msg: Cow::Borrowed(value),
+        }
+    }
 }
 
 /// Script runtime that hosts a Boa context and exposes helper modules.
@@ -249,12 +300,12 @@ impl RuntimeInternal {
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("JSON error")))?;
                 
                 let ctx_ref = ctx.borrow();
-                let state = ctx_ref.get_data::<MechanicsConfig>().cloned()
+                let state = ctx_ref.get_data::<MechanicsState>().cloned()
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Invalid state")))?;
                 
                 drop(ctx_ref);
                 let endpoint_name = endpoint.to_std_string_lossy();
-                let endpoint = state.endpoints.get(&endpoint_name)
+                let endpoint = state.config.endpoints.get(&endpoint_name)
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")))?;
                 
                 let res: Value = endpoint.post(&req_body).await
@@ -286,13 +337,12 @@ impl RuntimeInternal {
         let arg = job.arg;
         let config = job.config;
         let source = job.mod_source;
+        let state = MechanicsState::new(config);
 
-        let arg = serde_json::to_value(arg)
-            .map_err(JsError::from_rust)?;
         let source = source.as_ref();
         let mut ctx = &mut self.ctx;
         
-        ctx.insert_data(config);
+        ctx.insert_data(state);
 
         let source = Source::from_bytes(source);
         let module = Module::parse(source, None, &mut ctx)?;
@@ -309,7 +359,7 @@ impl RuntimeInternal {
 
         ctx.run_jobs()?;
 
-        ctx.remove_data::<MechanicsConfig>();
+        ctx.remove_data::<MechanicsState>();
 
         match res.state() {
             PromiseState::Fulfilled(v) => Ok(v),
@@ -319,7 +369,7 @@ impl RuntimeInternal {
     }
 
     /// Runs source and converts the resulting JS value into `serde_json::Value`.
-    pub fn run_source(&mut self, job: MechanicsJob) -> Result<Value, String> {
+    pub fn run_source(&mut self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         match self.run_source_inner(job) {
             Ok(data) => {
                 let mut ctx = &mut self.ctx;
@@ -330,7 +380,7 @@ impl RuntimeInternal {
             },
 
             Err(e) => {
-                Err(e.to_string())
+                Err(e.to_string().into())
             },
         }
     }
