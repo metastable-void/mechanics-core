@@ -460,7 +460,7 @@ impl Display for MechanicsError {
 impl std::error::Error for MechanicsError {}
 
 /// Script runtime that hosts a Boa context and exposes helper modules.
-pub struct RuntimeInternal {
+pub(crate) struct RuntimeInternal {
     ctx: Context,
     reqwest_client: reqwest::Client,
     queue: Rc<Queue>,
@@ -470,7 +470,7 @@ pub struct RuntimeInternal {
 
 impl RuntimeInternal {
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
-    pub fn new_with_client(reqwest_client: reqwest::Client) -> Self {
+    pub(crate) fn new_with_client(reqwest_client: reqwest::Client) -> Self {
         let queue = Rc::new(Queue::new());
 
         let loader = Rc::new(CustomModuleLoader::new());
@@ -525,15 +525,11 @@ impl RuntimeInternal {
         }
     }
 
-    pub fn set_execution_limits(&mut self, limits: MechanicsExecutionLimits) {
+    pub(crate) fn set_execution_limits(&mut self, limits: MechanicsExecutionLimits) {
         self.execution_limits = limits;
     }
 
-    pub fn execution_limits(&self) -> MechanicsExecutionLimits {
-        self.execution_limits
-    }
-
-    pub fn set_default_endpoint_timeout_ms(&mut self, timeout_ms: Option<u64>) {
+    pub(crate) fn set_default_endpoint_timeout_ms(&mut self, timeout_ms: Option<u64>) {
         self.default_endpoint_timeout_ms = timeout_ms;
     }
 
@@ -585,7 +581,7 @@ impl RuntimeInternal {
     }
 
     /// Runs source and converts the resulting JS value into `serde_json::Value`.
-    pub fn run_source(&mut self, job: MechanicsJob) -> Result<Value, MechanicsError> {
+    pub(crate) fn run_source(&mut self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         match self.run_source_inner(job) {
             Ok(data) => {
                 let mut ctx = &mut self.ctx;
