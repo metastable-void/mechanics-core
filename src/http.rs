@@ -332,6 +332,7 @@ impl HttpEndpoint {
                 QuerySpec::Slotted {
                     key,
                     slot,
+                    mode,
                     default,
                     min_bytes,
                     max_bytes,
@@ -341,7 +342,16 @@ impl HttpEndpoint {
                     validate_slot_name(slot)?;
                     validate_min_max_bounds(slot, *min_bytes, *max_bytes)?;
                     if let Some(default_value) = default {
-                        validate_byte_len(slot, default_value, *min_bytes, *max_bytes)?;
+                        let should_validate_default = match mode {
+                            SlottedQueryMode::Required | SlottedQueryMode::Optional => {
+                                !default_value.is_empty()
+                            }
+                            SlottedQueryMode::RequiredAllowEmpty
+                            | SlottedQueryMode::OptionalAllowEmpty => true,
+                        };
+                        if should_validate_default {
+                            validate_byte_len(slot, default_value, *min_bytes, *max_bytes)?;
+                        }
                     }
                 }
             }

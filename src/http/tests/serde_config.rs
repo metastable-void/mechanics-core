@@ -73,3 +73,49 @@ fn mechanics_config_rejects_invalid_header_allowlist_name() {
     let err = MechanicsConfig::new(endpoints).expect_err("config should fail fast");
     assert!(err.msg().contains("invalid header name `bad header`"));
 }
+
+#[test]
+fn mechanics_config_allows_empty_default_for_optional_query_with_min_bytes() {
+    let endpoint: HttpEndpoint = serde_json::from_value(json!({
+        "method": "get",
+        "url_template": "https://example.com/{id}",
+        "url_param_specs": { "id": {} },
+        "query_specs": [{
+            "type": "slotted",
+            "key": "q",
+            "slot": "q",
+            "mode": "optional",
+            "default": "",
+            "min_bytes": 1
+        }]
+    }))
+    .expect("endpoint should deserialize");
+
+    let mut endpoints = HashMap::new();
+    endpoints.insert("ok".to_owned(), endpoint);
+    MechanicsConfig::new(endpoints).expect("empty optional default should be treated as omitted");
+}
+
+#[test]
+fn mechanics_config_rejects_empty_default_for_optional_allow_empty_with_min_bytes() {
+    let endpoint: HttpEndpoint = serde_json::from_value(json!({
+        "method": "get",
+        "url_template": "https://example.com/{id}",
+        "url_param_specs": { "id": {} },
+        "query_specs": [{
+            "type": "slotted",
+            "key": "q",
+            "slot": "q",
+            "mode": "optional_allow_empty",
+            "default": "",
+            "min_bytes": 1
+        }]
+    }))
+    .expect("endpoint should deserialize");
+
+    let mut endpoints = HashMap::new();
+    endpoints.insert("bad".to_owned(), endpoint);
+    let err = MechanicsConfig::new(endpoints)
+        .expect_err("empty optional_allow_empty default should violate min_bytes");
+    assert!(err.msg().contains("too short"));
+}

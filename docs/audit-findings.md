@@ -8,7 +8,7 @@ Audit pass covered:
 
 Validation run:
 - `cargo clippy --all-targets --all-features` (pass).
-- `cargo test --all-targets` (pass: 53 passed, 0 failed, 20 ignored).
+- `cargo test --all-targets` (pass: 55 passed, 0 failed, 20 ignored).
 - `cargo test --all-targets -- --ignored` (pass: 20 passed, 0 failed; run outside sandbox restrictions).
 
 ## Current findings
@@ -45,6 +45,22 @@ Validation run:
 - New tests in `src/http/tests/serde_config.rs`:
 - `mechanics_config_new_rejects_invalid_endpoint_configuration`
 - `mechanics_config_deserialize_rejects_invalid_endpoint_configuration`
+
+### 4) Fail-fast validator over-rejected empty defaults for `optional` slotted queries
+- Severity: medium
+- Status: done (2026-03-18)
+- Regression introduced by:
+- Earlier fail-fast config validation pass.
+- Issue:
+- Empty defaults for `SlottedQueryMode::Optional` / `Required` are treated as absent at runtime, but were being rejected by config validation when `min_bytes` was set.
+- Resolution:
+- Validator now mirrors runtime semantics:
+- For `required` / `optional`, empty `default` is treated as absent and is not byte-length validated.
+- For `required_allow_empty` / `optional_allow_empty`, `default` is always validated.
+- Verification:
+- New tests in `src/http/tests/serde_config.rs`:
+- `mechanics_config_allows_empty_default_for_optional_query_with_min_bytes`
+- `mechanics_config_rejects_empty_default_for_optional_allow_empty_with_min_bytes`
 
 ## Historical tracked items (resolved)
 - `1` Pending Promise result handling: done.
