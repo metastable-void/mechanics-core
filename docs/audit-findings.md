@@ -22,10 +22,10 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 - Previous location: `src/pool.rs:396-446`
 - Previous issue: enqueue was non-blocking, but method still blocked waiting for result while name implied full non-blocking behavior.
 
-4. Reply-timeout model is heuristic and can become very large.
-- Location: `src/pool.rs:204-217`
-- Why: timeout budget scales with `queue_capacity + worker_count + 1`.
-- Impact: for large queues, "bounded" wait can still be operationally near-unbounded.
+4. [DONE] Reply-timeout model is heuristic and can become very large.
+- Fixed in: `src/pool.rs` (`run_timeout` config added, heuristic removed, `RunTimeout` introduced).
+- Previous location: `src/pool.rs:204-217`
+- Previous issue: timeout budget scaled with `queue_capacity + worker_count + 1`.
 
 5. HTTP status codes are not validated before JSON parse.
 - Location: `src/http.rs:67-68`

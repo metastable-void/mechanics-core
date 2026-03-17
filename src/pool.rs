@@ -27,9 +27,9 @@ pub struct MechanicsPoolConfig {
     pub queue_capacity: usize,
     /// Maximum time to wait while enqueueing in [`MechanicsPool::run`].
     pub enqueue_timeout: Duration,
+    /// Maximum total wall-clock time that a `run`/`run_try_enqueue` call may block.
+    pub run_timeout: Duration,
     /// Script execution limits applied to every job.
-    ///
-    /// `run`/`run_try_enqueue` also use `max_execution_time` to derive a bounded reply wait budget.
     pub execution_limits: MechanicsExecutionLimits,
     /// Default timeout in milliseconds for endpoint HTTP calls.
     ///
@@ -50,6 +50,7 @@ impl Default for MechanicsPoolConfig {
             worker_count: workers.max(1),
             queue_capacity: workers.saturating_mul(64).max(64),
             enqueue_timeout: Duration::from_millis(500),
+            run_timeout: Duration::from_secs(30),
             execution_limits: MechanicsExecutionLimits::default(),
             default_http_timeout_ms: Some(120_000),
             restart_window: Duration::from_secs(10),
@@ -120,8 +121,6 @@ struct MechanicsPoolShared {
     closed: AtomicBool,
     restart_blocked: AtomicBool,
     restart_guard: Mutex<RestartGuard>,
-    worker_count: usize,
-    queue_capacity: usize,
     execution_limits: MechanicsExecutionLimits,
     default_http_timeout_ms: Option<u64>,
     reqwest_client: reqwest::Client,
@@ -200,31 +199,32 @@ impl MechanicsPoolShared {
     fn live_workers(&self) -> usize {
         self.workers.lock().expect("workers mutex poisoned").len()
     }
-
-    fn reply_timeout(&self) -> Duration {
-        // `run` waits a bounded time for a reply, including possible queueing delay.
-        // Conservatively budget for one full execution slot per worker and queued item,
-        // plus this job's own execution time.
-        let slots = self
-            .queue_capacity
-            .saturating_add(self.worker_count)
-            .saturating_add(1);
-        let slots_u32 = u32::try_from(slots).unwrap_or(u32::MAX);
-        self.execution_limits
-            .max_execution_time
-            .saturating_mul(slots_u32)
-            .saturating_add(Duration::from_secs(1))
-    }
 }
 
 /// Thread pool of script runtimes for executing [`MechanicsJob`] workloads.
 pub struct MechanicsPool {
     shared: Arc<MechanicsPoolShared>,
     enqueue_timeout: Duration,
+    run_timeout: Duration,
     supervisor: Option<thread::JoinHandle<()>>,
 }
 
 impl MechanicsPool {
+    fn deadline_from_timeout(timeout: Duration) -> Result<Instant, MechanicsError> {
+        Instant::now().checked_add(timeout).ok_or_else(|| {
+            MechanicsError::runtime_pool("run_timeout is too large for the current platform clock")
+        })
+    }
+
+    fn remaining_to_deadline(deadline: Instant) -> Option<Duration> {
+        let now = Instant::now();
+        if now >= deadline {
+            None
+        } else {
+            Some(deadline.duration_since(now))
+        }
+    }
+
     /// Creates a new mechanics runtime pool.
     pub fn new(config: MechanicsPoolConfig) -> Result<Self, MechanicsError> {
         if config.worker_count == 0 {
@@ -237,6 +237,9 @@ impl MechanicsPool {
             return Err(MechanicsError::runtime_pool(
                 "max_restarts_in_window must be > 0",
             ));
+        }
+        if config.run_timeout.is_zero() {
+            return Err(MechanicsError::runtime_pool("run_timeout must be > 0"));
         }
 
         let reqwest_client = reqwest::Client::builder()
@@ -261,8 +264,6 @@ impl MechanicsPool {
                 config.restart_window,
                 config.max_restarts_in_window,
             )),
-            worker_count: config.worker_count,
-            queue_capacity: config.queue_capacity,
             execution_limits: config.execution_limits,
             default_http_timeout_ms: config.default_http_timeout_ms,
             reqwest_client,
@@ -325,6 +326,7 @@ impl MechanicsPool {
         Ok(Self {
             shared,
             enqueue_timeout: config.enqueue_timeout,
+            run_timeout: config.run_timeout,
             supervisor: Some(supervisor),
         })
     }
@@ -333,8 +335,7 @@ impl MechanicsPool {
     ///
     /// Timeout behavior:
     /// 1. Waits up to [`MechanicsPoolConfig::enqueue_timeout`] for queue space.
-    /// 2. After enqueueing, waits up to a bounded reply timeout derived from pool size
-    ///    and [`MechanicsExecutionLimits::max_execution_time`].
+    /// 2. Entire call is additionally bounded by [`MechanicsPoolConfig::run_timeout`].
     ///
     /// This keeps `run` from blocking indefinitely under load.
     /// If the wait times out, the job is marked canceled before execution (best effort).
@@ -349,6 +350,7 @@ impl MechanicsPool {
             ));
         }
 
+        let deadline = Self::deadline_from_timeout(self.run_timeout)?;
         let (reply_tx, reply_rx) = bounded(1);
         let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob {
@@ -357,9 +359,26 @@ impl MechanicsPool {
             canceled: Arc::clone(&canceled),
         });
 
-        match self.shared.tx.send_timeout(message, self.enqueue_timeout) {
+        let Some(remaining_for_enqueue) = Self::remaining_to_deadline(deadline) else {
+            canceled.store(true, Ordering::Release);
+            return Err(MechanicsError::run_timeout(
+                "run timeout elapsed before enqueue",
+            ));
+        };
+        let enqueue_wait = self.enqueue_timeout.min(remaining_for_enqueue);
+        let limited_by_run_timeout = enqueue_wait == remaining_for_enqueue;
+        match self.shared.tx.send_timeout(message, enqueue_wait) {
             Ok(()) => {}
             Err(SendTimeoutError::Timeout(PoolMessage::Run(pool_job))) => {
+                if limited_by_run_timeout {
+                    pool_job.canceled.store(true, Ordering::Release);
+                    let _ = pool_job.reply.send(Err(MechanicsError::run_timeout(
+                        "run timeout elapsed while waiting to enqueue",
+                    )));
+                    return Err(MechanicsError::run_timeout(
+                        "run timeout elapsed while waiting to enqueue",
+                    ));
+                }
                 let _ = pool_job.reply.send(Err(MechanicsError::queue_timeout(
                     "enqueue timed out because queue is full",
                 )));
@@ -379,12 +398,18 @@ impl MechanicsPool {
             }
         }
 
-        match reply_rx.recv_timeout(self.shared.reply_timeout()) {
+        let Some(remaining_for_reply) = Self::remaining_to_deadline(deadline) else {
+            canceled.store(true, Ordering::Release);
+            return Err(MechanicsError::run_timeout(
+                "run timeout elapsed while waiting for worker reply",
+            ));
+        };
+        match reply_rx.recv_timeout(remaining_for_reply) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 canceled.store(true, Ordering::Release);
-                Err(MechanicsError::queue_timeout(
-                    "timed out waiting for worker reply",
+                Err(MechanicsError::run_timeout(
+                    "run timeout elapsed while waiting for worker reply",
                 ))
             }
             Err(_) => Err(MechanicsError::worker_unavailable(
@@ -395,7 +420,8 @@ impl MechanicsPool {
 
     /// Attempts to enqueue a job without waiting for queue space.
     ///
-    /// After successful enqueue, this uses the same bounded reply timeout behavior as [`Self::run`].
+    /// After successful enqueue, total call duration is bounded by
+    /// [`MechanicsPoolConfig::run_timeout`], like [`Self::run`].
     pub fn run_try_enqueue(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
@@ -406,6 +432,7 @@ impl MechanicsPool {
             ));
         }
 
+        let deadline = Self::deadline_from_timeout(self.run_timeout)?;
         let (reply_tx, reply_rx) = bounded(1);
         let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob {
@@ -431,12 +458,18 @@ impl MechanicsPool {
             }
         }
 
-        match reply_rx.recv_timeout(self.shared.reply_timeout()) {
+        let Some(remaining_for_reply) = Self::remaining_to_deadline(deadline) else {
+            canceled.store(true, Ordering::Release);
+            return Err(MechanicsError::run_timeout(
+                "run timeout elapsed while waiting for worker reply",
+            ));
+        };
+        match reply_rx.recv_timeout(remaining_for_reply) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 canceled.store(true, Ordering::Release);
-                Err(MechanicsError::queue_timeout(
-                    "timed out waiting for worker reply",
+                Err(MechanicsError::run_timeout(
+                    "run timeout elapsed while waiting for worker reply",
                 ))
             }
             Err(_) => Err(MechanicsError::worker_unavailable(
@@ -551,8 +584,6 @@ mod tests {
             closed: AtomicBool::new(false),
             restart_blocked: AtomicBool::new(false),
             restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-            worker_count: 1,
-            queue_capacity,
             execution_limits,
             default_http_timeout_ms: None,
             reqwest_client: reqwest::Client::new(),
@@ -561,8 +592,48 @@ mod tests {
         MechanicsPool {
             shared,
             enqueue_timeout: Duration::from_millis(10),
+            run_timeout: Duration::from_millis(50),
             supervisor: None,
         }
+    }
+
+    fn is_transient_internet_transport_error(msg: &str) -> bool {
+        let msg = msg.to_ascii_lowercase();
+        msg.contains("error sending request")
+            || msg.contains("dns error")
+            || msg.contains("failed to lookup address")
+            || msg.contains("connection refused")
+            || msg.contains("connection reset")
+            || msg.contains("network is unreachable")
+            || msg.contains("tls")
+            || msg.contains("certificate")
+    }
+
+    fn run_internet_job_with_retry(
+        pool: &MechanicsPool,
+        job: &MechanicsJob,
+        test_name: &str,
+    ) -> Option<Result<Value, MechanicsError>> {
+        const ATTEMPTS: usize = 3;
+        for attempt in 1..=ATTEMPTS {
+            let result = pool.run(job.clone());
+            match &result {
+                Err(MechanicsError::Execution(msg))
+                    if is_transient_internet_transport_error(msg) =>
+                {
+                    if attempt < ATTEMPTS {
+                        thread::sleep(Duration::from_millis(200));
+                        continue;
+                    }
+                    eprintln!(
+                        "skipping {test_name}: transient internet transport error after {ATTEMPTS} attempts: {msg}"
+                    );
+                    return None;
+                }
+                _ => return Some(result),
+            }
+        }
+        None
     }
 
     #[test]
@@ -594,6 +665,17 @@ mod tests {
         }) {
             Err(err) => err,
             Ok(_) => panic!("max_restarts_in_window=0 must fail"),
+        };
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+
+        let err = match MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            queue_capacity: 1,
+            run_timeout: Duration::ZERO,
+            ..Default::default()
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("run_timeout=0 must fail"),
         };
         assert!(matches!(err, MechanicsError::RuntimePool(_)));
     }
@@ -641,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn run_maps_reply_timeout_to_queue_timeout() {
+    fn run_maps_reply_timeout_to_run_timeout() {
         let limits = MechanicsExecutionLimits {
             max_execution_time: Duration::from_millis(5),
             ..Default::default()
@@ -661,7 +743,59 @@ mod tests {
         let err = pool
             .run(job)
             .expect_err("no worker consumes queue; should hit reply timeout");
-        assert!(matches!(err, MechanicsError::QueueTimeout(_)));
+        assert!(matches!(err, MechanicsError::RunTimeout(_)));
+    }
+
+    #[test]
+    fn run_timeout_can_expire_while_waiting_to_enqueue() {
+        let (tx, rx) = bounded(1);
+        let (exit_tx, exit_rx) = bounded(8);
+        let shared = Arc::new(MechanicsPoolShared {
+            tx,
+            rx,
+            exit_tx,
+            exit_rx,
+            workers: Mutex::new(HashMap::new()),
+            next_worker_id: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            restart_blocked: AtomicBool::new(false),
+            restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+            execution_limits: MechanicsExecutionLimits::default(),
+            default_http_timeout_ms: None,
+            reqwest_client: reqwest::Client::new(),
+        });
+
+        let pool = MechanicsPool {
+            shared,
+            enqueue_timeout: Duration::from_secs(1),
+            run_timeout: Duration::from_millis(5),
+            supervisor: None,
+        };
+
+        let (reply_tx, _reply_rx) = bounded(1);
+        let queued = make_job(
+            r#"export default function main() { return 0; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        pool.shared
+            .tx
+            .send(PoolMessage::Run(PoolJob {
+                job: queued,
+                reply: reply_tx,
+                canceled: Arc::new(AtomicBool::new(false)),
+            }))
+            .expect("fill queue");
+
+        let job = make_job(
+            r#"export default function main() { return 1; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        let err = pool
+            .run(job)
+            .expect_err("run_timeout should fire while waiting for enqueue");
+        assert!(matches!(err, MechanicsError::RunTimeout(_)));
     }
 
     #[test]
@@ -1140,9 +1274,12 @@ mod tests {
             }
         "#;
         let job = make_job(source, config, json!({"hello":"internet"}));
-        let value = pool
-            .run(job)
-            .expect("internet endpoint call should succeed");
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_endpoint_roundtrip_httpbin")
+        else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
 
         assert_eq!(value["json"]["hello"], json!("internet"));
     }
@@ -1171,14 +1308,18 @@ mod tests {
             }
         "#;
         let job = make_job(source, config, json!({"hello":"timeout"}));
-        let err = pool.run(job).expect_err("request should timeout");
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_http_timeout_from_pool_default")
+        else {
+            return;
+        };
+        let err = result.expect_err("request should timeout");
         match err {
             MechanicsError::Execution(msg) => {
                 assert!(
                     msg.contains("timed out")
                         || msg.contains("timeout")
                         || msg.contains("deadline")
-                        || msg.contains("request")
                 );
             }
             other => panic!("unexpected error kind: {other}"),
@@ -1210,9 +1351,14 @@ mod tests {
             }
         "#;
         let job = make_job(source, config, json!({"hello":"override"}));
-        let value = pool
-            .run(job)
-            .expect("endpoint-level timeout should allow success");
+        let Some(result) = run_internet_job_with_retry(
+            &pool,
+            &job,
+            "internet_endpoint_timeout_overrides_pool_default",
+        ) else {
+            return;
+        };
+        let value = result.expect("endpoint-level timeout should allow success");
         let echoed_json = value
             .get("json")
             .and_then(|v| v.get("hello"))
@@ -1254,9 +1400,12 @@ mod tests {
             }
         "#;
         let job = make_job(source, config, json!({"hello":"headers"}));
-        let value = pool
-            .run(job)
-            .expect("internet endpoint call should succeed");
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_endpoint_sends_custom_headers")
+        else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
 
         assert_eq!(value["json"]["hello"], json!("headers"));
         assert_eq!(value["headers"]["X-Mechanics-Test"], json!("header-check"));

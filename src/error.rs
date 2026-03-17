@@ -9,6 +9,8 @@ pub enum MechanicsError {
     QueueFull(Cow<'static, str>),
     /// Submission failed because enqueue timed out.
     QueueTimeout(Cow<'static, str>),
+    /// Call failed because overall `run`/`run_try_enqueue` wait time elapsed.
+    RunTimeout(Cow<'static, str>),
     /// Submission failed because the pool is closed.
     PoolClosed(Cow<'static, str>),
     /// Submission or result retrieval failed because no worker is available.
@@ -42,6 +44,11 @@ impl MechanicsError {
         Self::QueueTimeout(msg.into())
     }
 
+    /// Builds a run-timeout error.
+    pub fn run_timeout<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+        Self::RunTimeout(msg.into())
+    }
+
     /// Builds a pool-closed error.
     pub fn pool_closed<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::PoolClosed(msg.into())
@@ -68,6 +75,7 @@ impl MechanicsError {
             Self::Execution(msg) => msg.as_ref(),
             Self::QueueFull(msg) => msg.as_ref(),
             Self::QueueTimeout(msg) => msg.as_ref(),
+            Self::RunTimeout(msg) => msg.as_ref(),
             Self::PoolClosed(msg) => msg.as_ref(),
             Self::WorkerUnavailable(msg) => msg.as_ref(),
             Self::Canceled(msg) => msg.as_ref(),
@@ -82,6 +90,7 @@ impl MechanicsError {
             Self::Execution(_) => "MechanicsError::Execution",
             Self::QueueFull(_) => "MechanicsError::QueueFull",
             Self::QueueTimeout(_) => "MechanicsError::QueueTimeout",
+            Self::RunTimeout(_) => "MechanicsError::RunTimeout",
             Self::PoolClosed(_) => "MechanicsError::PoolClosed",
             Self::WorkerUnavailable(_) => "MechanicsError::WorkerUnavailable",
             Self::Canceled(_) => "MechanicsError::Canceled",

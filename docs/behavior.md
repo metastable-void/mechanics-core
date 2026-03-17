@@ -68,10 +68,10 @@ Timeout behavior:
 
 ### `run(job)`
 - Blocks waiting for enqueue up to `enqueue_timeout`.
-- After enqueue, blocks waiting for reply up to an internally derived bounded timeout.
+- Entire API call is bounded by `run_timeout` (from call entry through result wait).
 - Returns:
 - success JSON value,
-- or `MechanicsError` (`QueueTimeout`, `QueueFull`, `Execution`, etc.).
+- or `MechanicsError` (`RunTimeout`, `QueueTimeout`, `QueueFull`, `Execution`, etc.).
 
 ### `run_try_enqueue(job)`
 - Non-blocking enqueue attempt.
@@ -102,6 +102,7 @@ Defaults:
 - `Execution`
 - `QueueFull`
 - `QueueTimeout`
+- `RunTimeout`
 - `PoolClosed`
 - `WorkerUnavailable`
 - `Canceled`
