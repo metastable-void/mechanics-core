@@ -11,7 +11,7 @@ in-process caching or sticky worker affinity. This supports horizontal scaling.
 - Synthetic JS modules:
 - `mechanics:endpoint` for preconfigured HTTP calls (`GET`/`POST`/`PUT`/`DELETE`).
 - `mechanics:form-urlencoded`, `mechanics:base64`, `mechanics:hex`, `mechanics:base32`, `mechanics:rand`.
-- Structured error model (`MechanicsError`).
+- Structured error model (`MechanicsError`, marked `#[non_exhaustive]`).
 
 Public API re-exports are in `src/lib.rs`.
 

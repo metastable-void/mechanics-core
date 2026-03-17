@@ -36,6 +36,7 @@ At runtime:
 - `default` export is resolved and invoked.
 - If return value is not a Promise, it is wrapped in a resolved Promise.
 - Job queue drains once after invocation.
+- If module evaluation Promise or default export Promise is still pending after queue drain, execution fails.
 - Final value is converted to `serde_json::Value`.
 - Unhandled async job errors (including unhandled Promise rejections) are treated as fatal for the current job.
 
@@ -60,11 +61,15 @@ Resolution behavior:
 - `name` must match a key in `MechanicsConfig.endpoints`.
 - Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`DELETE`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
 - URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
+- URL template must not contain query string or fragment; use `query_specs` for query output.
 - Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
+- Unknown JS `queries` keys are rejected unless referenced by configured slotted query specs.
 - Request body serialization uses endpoint `request_body_type`.
 - Response body parsing uses endpoint `response_body_type`.
 - Empty response bodies are always returned to JS as `null`.
 - Configured headers are validated; invalid names/values fail the call.
+- If missing, `User-Agent` is injected automatically.
+- If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
 - `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows JSON parsing on non-2xx statuses.
 
@@ -84,6 +89,7 @@ Config shape is JSON-friendly and snake_case (`serde`):
 - `request_body_type`: `"json" | "utf8" | "bytes"` (method defaults apply).
 - `response_body_type`: `"json" | "utf8" | "bytes"` (default `"json"`).
 - `url_template` is a full URL template string and placeholder names must be unique.
+- placeholder/slot names are limited to ASCII letters, digits, and `_`.
 - `url_param_specs` maps placeholder names to constraints and optional defaults.
 - `query_specs` is an ordered list with `type: "const" | "slotted"`.
 - slotted query `mode` values:
@@ -162,6 +168,10 @@ Runtime registers a synthetic module named `mechanics:base64` with:
 - `encode(bufferLike: TypedArray | ArrayBuffer | DataView, variant: "base64" | "base64url" = "base64"): string`
 - `decode(encoded: string, variant: "base64" | "base64url" = "base64"): Uint8Array`
 
+Notes:
+- `base64url` encoding is emitted without padding.
+- decode accepts both padded and unpadded forms.
+
 ## Built-in module: `mechanics:hex`
 Runtime registers a synthetic module named `mechanics:hex` with:
 - `encode(bufferLike: TypedArray | ArrayBuffer | DataView): string`
@@ -171,6 +181,10 @@ Runtime registers a synthetic module named `mechanics:hex` with:
 Runtime registers a synthetic module named `mechanics:base32` with:
 - `encode(bufferLike: TypedArray | ArrayBuffer | DataView, variant: "base32" | "base32hex" = "base32"): string`
 - `decode(encoded: string, variant: "base32" | "base32hex" = "base32"): Uint8Array`
+
+Notes:
+- decode is case-insensitive for alphabetic input.
+- decode accepts both padded and unpadded forms.
 
 ## Built-in module: `mechanics:rand`
 Runtime registers a synthetic module named `mechanics:rand` with default export:
@@ -227,7 +241,7 @@ Defaults:
 - `max_stack_size = 10 * 1024`
 
 ## Errors
-`MechanicsError` variants:
+`MechanicsError` current variants:
 - `Execution`
 - `QueueFull`
 - `QueueTimeout`
@@ -237,6 +251,9 @@ Defaults:
 - `Canceled`
 - `Panic`
 - `RuntimePool`
+
+Note:
+- `MechanicsError` is `#[non_exhaustive]`; downstream `match` statements must include a wildcard arm.
 
 ## Usage example (Rust)
 ```rust
@@ -292,7 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - This crate currently does not include persistent module caching (source is parsed per job).
 
 ## Test coverage shape
-Unit tests in `src/pool.rs` cover:
+Unit tests under `src/pool/tests/` and `src/http/tests/` cover:
 - config validation,
 - closed/unavailable pool behavior,
 - queue-full and enqueue-timeout paths,
