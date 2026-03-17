@@ -1,0 +1,235 @@
+use super::*;
+
+#[test]
+fn form_urlencoded_module_roundtrip() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { encode, decode } from "mechanics:form-urlencoded";
+            export default function main(_arg) {
+                const encoded = encode({ hello: "world test", x: "1+2" });
+                const decoded = decode(encoded);
+                return { encoded, decoded };
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["decoded"]["hello"], json!("world test"));
+    assert_eq!(value["decoded"]["x"], json!("1+2"));
+    let encoded = value["encoded"].as_str().expect("encoded should be string");
+    assert!(encoded.contains("hello=world+test"));
+}
+
+#[test]
+fn base64_module_roundtrip_base64url() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { encode, decode } from "mechanics:base64";
+            export default function main(_arg) {
+                const raw = new Uint8Array([1, 2, 3, 250, 255]);
+                const encoded = encode(raw, "base64url");
+                const decoded = decode(encoded, "base64url");
+                return { encoded, bytes: Array.from(decoded) };
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["bytes"], json!([1, 2, 3, 250, 255]));
+    assert!(
+        !value["encoded"]
+            .as_str()
+            .expect("encoded should be string")
+            .contains('=')
+    );
+}
+
+#[test]
+fn hex_module_roundtrip() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { encode, decode } from "mechanics:hex";
+            export default function main(_arg) {
+                const raw = new Uint8Array([0, 15, 16, 255]);
+                const encoded = encode(raw);
+                const decoded = decode(encoded);
+                return { encoded, bytes: Array.from(decoded) };
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["encoded"], json!("000f10ff"));
+    assert_eq!(value["bytes"], json!([0, 15, 16, 255]));
+}
+
+#[test]
+fn base32_module_roundtrip_base32hex() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { encode, decode } from "mechanics:base32";
+            export default function main(_arg) {
+                const raw = new Uint8Array([104, 101, 108, 108, 111]);
+                const encoded = encode(raw, "base32hex");
+                const decoded = decode(encoded, "base32hex");
+                return { encoded, bytes: Array.from(decoded) };
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["bytes"], json!([104, 101, 108, 108, 111]));
+    assert!(
+        value["encoded"]
+            .as_str()
+            .expect("encoded should be string")
+            .len()
+            >= 8
+    );
+}
+
+#[test]
+fn rand_module_fills_buffer() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import fillRandom from "mechanics:rand";
+            export default function main(_arg) {
+                const raw = new Uint8Array(32);
+                fillRandom(raw);
+                const arr = Array.from(raw);
+                const anyNonZero = arr.some((x) => x !== 0);
+                return { anyNonZero, len: arr.length };
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["len"], json!(32));
+    assert_eq!(value["anyNonZero"], json!(true));
+}
+
+#[test]
+fn rand_module_fills_arraybuffer_and_dataview() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import fillRandom from "mechanics:rand";
+            export default function main(_arg) {
+                const ab = new ArrayBuffer(32);
+                const dvBuf = new ArrayBuffer(32);
+                const dv = new DataView(dvBuf);
+                fillRandom(ab);
+                fillRandom(dv);
+                const abArr = Array.from(new Uint8Array(ab));
+                const dvArr = Array.from(new Uint8Array(dvBuf));
+                return {
+                    abNonZero: abArr.some((x) => x !== 0),
+                    dvNonZero: dvArr.some((x) => x !== 0),
+                    abLen: abArr.length,
+                    dvLen: dvArr.length,
+                };
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["abLen"], json!(32));
+    assert_eq!(value["dvLen"], json!(32));
+    assert_eq!(value["abNonZero"], json!(true));
+    assert_eq!(value["dvNonZero"], json!(true));
+}
+
+#[test]
+fn base64_decode_rejects_invalid_input() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { decode } from "mechanics:base64";
+            export default function main(_arg) {
+                return decode("%%%");
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("invalid base64 input should fail decode");
+    match err {
+        MechanicsError::Execution(msg) => assert!(msg.to_ascii_lowercase().contains("invalid")),
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[test]
+fn hex_decode_rejects_invalid_input() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { decode } from "mechanics:hex";
+            export default function main(_arg) {
+                return decode("zz");
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("invalid hex input should fail decode");
+    match err {
+        MechanicsError::Execution(msg) => assert!(msg.to_ascii_lowercase().contains("invalid")),
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[test]
+fn base32_decode_rejects_invalid_input() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { decode } from "mechanics:base32";
+            export default function main(_arg) {
+                return decode("***", "base32");
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("invalid base32 input should fail decode");
+    match err {
+        MechanicsError::Execution(msg) => assert!(msg.to_ascii_lowercase().contains("invalid")),
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
