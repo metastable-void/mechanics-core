@@ -39,6 +39,11 @@ impl HttpEndpoint {
         }
     }
 
+    pub fn with_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
     /// Sends a JSON POST request and deserializes the JSON response into `Res`.
     pub async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(
         &self,
@@ -50,12 +55,8 @@ impl HttpEndpoint {
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
         let mut headers = HeaderMap::new();
         for (k, v) in &self.headers {
-            match (k.try_into() as Result<HeaderName, _>, v.try_into()) {
-                (Ok(k), Ok(v)) => {
-                    headers.insert(k, v);
-                },
-
-                _ => {},
+            if let (Ok(k), Ok(v)) = (k.try_into() as Result<HeaderName, _>, v.try_into()) {
+                headers.insert(k, v);
             }
         }
         headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
@@ -209,34 +210,36 @@ impl JobExecutor for Queue {
             }
 
             if group.is_empty() {
-                if self.promise_jobs.borrow().is_empty() && self.generic_jobs.borrow().is_empty() {
-                    if let Some(next_timeout_at) = self.next_timeout_at() {
-                        let sleep_dur = {
-                            let ctx_ref = context.borrow();
-                            let now = ctx_ref.clock().now();
-                            if next_timeout_at <= now {
-                                Duration::ZERO
-                            } else {
-                                let mut d: Duration = (next_timeout_at - now).into();
-                                if let Some(deadline) = *self.deadline.borrow() {
-                                    let remaining = if deadline <= now {
-                                        Duration::ZERO
-                                    } else {
-                                        (deadline - now).into()
-                                    };
-                                    d = d.min(remaining);
-                                }
-                                d
+                if self.promise_jobs.borrow().is_empty()
+                    && self.generic_jobs.borrow().is_empty()
+                    && let Some(next_timeout_at) = self.next_timeout_at()
+                {
+                    let sleep_dur = {
+                        let ctx_ref = context.borrow();
+                        let now = ctx_ref.clock().now();
+                        if next_timeout_at <= now {
+                            Duration::ZERO
+                        } else {
+                            let mut d: Duration = (next_timeout_at - now).into();
+                            if let Some(deadline) = *self.deadline.borrow() {
+                                let remaining = if deadline <= now {
+                                    Duration::ZERO
+                                } else {
+                                    (deadline - now).into()
+                                };
+                                d = d.min(remaining);
                             }
-                        };
-
-                        if !sleep_dur.is_zero() {
-                            tokio::time::sleep(sleep_dur).await;
+                            d
                         }
+                    };
+
+                    if !sleep_dur.is_zero() {
+                        tokio::time::sleep(sleep_dur).await;
                     }
                 }
             } else {
-                let polled = if let Some(deadline) = *self.deadline.borrow() {
+                let deadline = *self.deadline.borrow();
+                let polled = if let Some(deadline) = deadline {
                     let remaining = {
                         let ctx_ref = context.borrow();
                         let now = ctx_ref.clock().now();
@@ -306,16 +309,19 @@ impl CustomModuleLoader {
 
 impl ModuleLoader for CustomModuleLoader {
     /// Resolves imports from the in-memory module registry.
-    fn load_imported_module(
-            self: Rc<Self>,
-            _referrer: boa_engine::module::Referrer,
-            specifier: JsString,
-            _context: &RefCell<&mut Context>,
-        ) -> impl Future<Output = JsResult<Module>> {
-        async move {
-            self.defined.borrow().get(&specifier).cloned()
-                .ok_or(JsError::from_native(JsNativeError::reference().with_message("Module not found")))
-        }
+    async fn load_imported_module(
+        self: Rc<Self>,
+        _referrer: boa_engine::module::Referrer,
+        specifier: JsString,
+        _context: &RefCell<&mut Context>,
+    ) -> JsResult<Module> {
+        self.defined
+            .borrow()
+            .get(&specifier)
+            .cloned()
+            .ok_or(JsError::from_native(
+                JsNativeError::reference().with_message("Module not found"),
+            ))
     }
 }
 
@@ -487,18 +493,22 @@ impl RuntimeInternal {
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("endpoint is not a string")))?;
                 let req_body = args.get_or_undefined(1).to_json(&mut ctx.borrow_mut())?
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("JSON error")))?;
-                
-                let ctx_ref = ctx.borrow();
-                let state = ctx_ref.get_data::<MechanicsState>().cloned()
-                    .ok_or(JsError::from_native(JsNativeError::typ().with_message("Invalid state")))?;
-                
-                drop(ctx_ref);
+
+                let state = {
+                    let ctx_ref = ctx.borrow();
+                    ctx_ref
+                        .get_data::<MechanicsState>()
+                        .cloned()
+                        .ok_or(JsError::from_native(
+                            JsNativeError::typ().with_message("Invalid state"),
+                        ))?
+                };
                 let endpoint_name = endpoint.to_std_string_lossy();
                 let endpoint = state.config.endpoints.get(&endpoint_name)
                     .ok_or(JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")))?;
                 
                 let res: Value = endpoint.post(state.reqwest(), state.default_timeout_ms(), &req_body).await
-                    .map_err(|e| JsError::from_rust(e))?;
+                    .map_err(JsError::from_rust)?;
 
                 let res = JsValue::from_json(&res, &mut ctx.borrow_mut())?;
                 Ok(res)
@@ -541,7 +551,7 @@ impl RuntimeInternal {
         let state = MechanicsState::new(config, self.reqwest_client.clone(), self.default_endpoint_timeout_ms);
 
         let source = source.as_ref();
-        let mut ctx = &mut self.ctx;
+        let ctx = &mut self.ctx;
 
         let runtime_limits = ctx.runtime_limits_mut();
         runtime_limits.set_loop_iteration_limit(self.execution_limits.max_loop_iterations);
@@ -554,17 +564,17 @@ impl RuntimeInternal {
 
         let source = Source::from_bytes(source);
         let result = (|| -> JsResult<JsValue> {
-            let module = Module::parse(source, None, &mut ctx)?;
-            let _ = module.load_link_evaluate(&mut ctx);
+            let module = Module::parse(source, None, ctx)?;
+            let _ = module.load_link_evaluate(ctx);
             ctx.run_jobs()?;
 
-            let arg = JsValue::from_json(&arg, &mut ctx)?;
-            let main = module.get_value(js_string!("default"), &mut ctx)?;
+            let arg = JsValue::from_json(&arg, ctx)?;
+            let main = module.get_value(js_string!("default"), ctx)?;
             let main = main.as_function()
                 .ok_or(JsError::from_native(JsNativeError::reference().with_message("Default export is not a function")))?;
-            let res = main.call(&JsValue::null(), &[arg], &mut ctx)?;
+            let res = main.call(&JsValue::null(), &[arg], ctx)?;
             let res = res.as_promise()
-                .unwrap_or(JsPromise::resolve(res, &mut ctx));
+                .unwrap_or(JsPromise::resolve(res, ctx));
 
             ctx.run_jobs()?;
 
@@ -584,8 +594,8 @@ impl RuntimeInternal {
     pub(crate) fn run_source(&mut self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         match self.run_source_inner(job) {
             Ok(data) => {
-                let mut ctx = &mut self.ctx;
-                match data.to_json(&mut ctx) {
+                let ctx = &mut self.ctx;
+                match data.to_json(ctx) {
                     Ok(d) => Ok(d.unwrap_or(Value::Null)),
                     _ => Ok(Value::Null),
                 }
@@ -744,11 +754,18 @@ impl MechanicsPoolShared {
 
         let mut workers = shared.workers.lock().expect("workers mutex poisoned");
         workers.insert(worker_id, handle);
+        shared.restart_blocked.store(false, Ordering::Release);
         worker_id
     }
 
     fn live_workers(&self) -> usize {
         self.workers.lock().expect("workers mutex poisoned").len()
+    }
+
+    fn reply_timeout(&self) -> Duration {
+        self.execution_limits
+            .max_execution_time
+            .saturating_add(Duration::from_secs(1))
     }
 }
 
@@ -888,8 +905,11 @@ impl MechanicsPool {
             }
         }
 
-        match reply_rx.recv() {
+        match reply_rx.recv_timeout(self.shared.reply_timeout()) {
             Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(MechanicsError::worker_unavailable(
+                "timed out waiting for worker reply",
+            )),
             Err(_) => Err(MechanicsError::worker_unavailable(
                 "worker dropped reply channel",
             )),
@@ -927,8 +947,11 @@ impl MechanicsPool {
             }
         }
 
-        match reply_rx.recv() {
+        match reply_rx.recv_timeout(self.shared.reply_timeout()) {
             Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(MechanicsError::worker_unavailable(
+                "timed out waiting for worker reply",
+            )),
             Err(_) => Err(MechanicsError::worker_unavailable(
                 "worker dropped reply channel",
             )),

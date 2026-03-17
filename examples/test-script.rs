@@ -14,7 +14,7 @@ fn main() -> std::io::Result<()> {
     };
     let config_json = std::fs::read_to_string(config_path)?;
     let js_source = std::fs::read_to_string(js_path)?;
-    let config: MechanicsConfig = serde_json::from_str(&config_json).map_err(|e| std::io::Error::other(e))?;
+    let config: MechanicsConfig = serde_json::from_str(&config_json).map_err(std::io::Error::other)?;
     let pool = MechanicsPool::new(MechanicsPoolConfig::default()).map_err(std::io::Error::other)?;
     let job = MechanicsJob {
         mod_source: js_source.into(),
