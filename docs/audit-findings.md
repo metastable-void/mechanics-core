@@ -8,7 +8,7 @@ Audit pass covered:
 
 Validation run:
 - `cargo clippy --all-targets --all-features` (pass).
-- `cargo test --all-targets` (pass: 45 passed, 0 failed, 19 ignored).
+- `cargo test --all-targets` (pass: 46 passed, 0 failed, 19 ignored).
 - `cargo test --all-targets -- --ignored` (pass: 19 passed, 0 failed; run outside sandbox restrictions).
 
 ## Current findings
@@ -26,14 +26,12 @@ Validation run:
 
 ### 2) `mechanics:form-urlencoded.encode` output order is non-deterministic
 - Severity: low
-- Status: open
-- Evidence:
-- Parsed record uses `HashMap<String, String>`: [`src/runtime/synthetic_modules.rs:120`](/home/menhera/projects/mechanics-core/src/runtime/synthetic_modules.rs:120).
-- Encoding iterates that `HashMap` directly: [`src/runtime/synthetic_modules.rs:140`](/home/menhera/projects/mechanics-core/src/runtime/synthetic_modules.rs:140).
-- Impact:
-- Query/body canonicalization that depends on stable key order (for signatures or snapshots) may be flaky across runs/processes.
-- Suggested fix:
-- Sort keys before encoding or switch to ordered map semantics for this module API.
+- Status: done (2026-03-18)
+- Resolution:
+- Switched form-urlencode record handling to ordered-map semantics (`BTreeMap`) in synthetic module encode/decode paths.
+- `encode` now emits key-value pairs in lexical key order deterministically.
+- Verification:
+- Regression test: [`src/pool/tests/synthetic_modules.rs`](/home/menhera/projects/mechanics-core/src/pool/tests/synthetic_modules.rs) (`form_urlencoded_module_encode_is_key_ordered`)
 
 ### 3) Endpoint configuration validation is fail-late (first call), not fail-fast
 - Severity: low

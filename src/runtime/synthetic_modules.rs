@@ -14,7 +14,10 @@ use data_encoding::{
     BASE64URL_NOPAD,
 };
 use serde_json::Value;
-use std::{collections::HashMap, rc::Rc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    rc::Rc,
+};
 use url::form_urlencoded;
 
 fn parse_string_map_field(
@@ -117,7 +120,7 @@ fn endpoint_response_to_js_value(
 fn parse_form_record_arg(
     args: &[JsValue],
     context: &mut Context,
-) -> JsResult<HashMap<String, String>> {
+) -> JsResult<BTreeMap<String, String>> {
     let value = args.get_or_undefined(0);
     let json = value
         .to_json(context)?
@@ -151,7 +154,7 @@ fn form_urlencode_decode(
 ) -> JsResult<JsValue> {
     let params = required_string_arg(args, 0, "params")?;
     let params = params.strip_prefix('?').unwrap_or(&params);
-    let mut record = HashMap::new();
+    let mut record = BTreeMap::new();
     for (k, v) in form_urlencoded::parse(params.as_bytes()) {
         record.insert(k.into_owned(), v.into_owned());
     }

@@ -25,6 +25,26 @@ fn form_urlencoded_module_roundtrip() {
 }
 
 #[test]
+fn form_urlencoded_module_encode_is_key_ordered() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { encode } from "mechanics:form-urlencoded";
+            export default function main(_arg) {
+                return encode({ z: "last", a: "first", m: "middle" });
+            }
+        "#;
+    let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+    let value = pool.run(job).expect("run module");
+    let encoded = value.as_str().expect("encoded should be string");
+    assert_eq!(encoded, "a=first&m=middle&z=last");
+}
+
+#[test]
 fn base64_module_roundtrip_base64url() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,

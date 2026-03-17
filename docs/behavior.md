@@ -163,6 +163,7 @@ Runtime registers a synthetic module named `mechanics:form-urlencoded` with:
 
 Notes:
 - UTF-8 form-urlencode algorithm (`application/x-www-form-urlencoded`).
+- `encode` uses ordered-map semantics (keys are emitted in lexical order) for deterministic output.
 - `decode` accepts optional leading `?`.
 - duplicate decoded keys use "last one wins" semantics.
 

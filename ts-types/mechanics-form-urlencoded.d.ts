@@ -4,6 +4,8 @@
 declare module "mechanics:form-urlencoded" {
   /**
    * Encodes key/value pairs as a form-urlencoded string.
+   *
+   * Output uses deterministic lexical key ordering.
    */
   export function encode(record: Record<string, string>): string;
 
