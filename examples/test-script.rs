@@ -15,7 +15,7 @@ fn main() -> std::io::Result<()> {
     let config_json = std::fs::read_to_string(config_path)?;
     let js_source = std::fs::read_to_string(js_path)?;
     let config: MechanicsConfig = serde_json::from_str(&config_json).map_err(|e| std::io::Error::other(e))?;
-    let mut runtime = RuntimeInternal::new();
+    let mut runtime = RuntimeInternal::new_with_client(reqwest::Client::new());
     let job = MechanicsJob {
         mod_source: js_source.into(),
         arg: Arc::new(serde_json::Value::Null),

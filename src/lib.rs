@@ -297,7 +297,7 @@ pub struct RuntimeInternal {
 
 impl RuntimeInternal {
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
-    pub fn new() -> Self {
+    pub fn new_with_client(reqwest_client: reqwest::Client) -> Self {
         let queue = Queue::new();
 
         let loader = Rc::new(CustomModuleLoader::new());
@@ -343,7 +343,6 @@ impl RuntimeInternal {
         
         loader.define_module(js_string!("mechanics:endpoint"), module);
 
-        let reqwest_client = reqwest::Client::new();
         Self {
             ctx: context,
             reqwest_client,
