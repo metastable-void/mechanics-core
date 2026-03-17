@@ -28,6 +28,8 @@ pub struct MechanicsPoolConfig {
     /// Maximum time to wait while enqueueing in [`MechanicsPool::run`].
     pub enqueue_timeout: Duration,
     /// Script execution limits applied to every job.
+    ///
+    /// `run`/`try_run` also use `max_execution_time` to derive a bounded reply wait budget.
     pub execution_limits: MechanicsExecutionLimits,
     /// Default timeout in milliseconds for endpoint HTTP calls.
     ///
@@ -93,6 +95,7 @@ impl RestartGuard {
 struct PoolJob {
     job: MechanicsJob,
     reply: Sender<Result<Value, MechanicsError>>,
+    canceled: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -117,6 +120,8 @@ struct MechanicsPoolShared {
     closed: AtomicBool,
     restart_blocked: AtomicBool,
     restart_guard: Mutex<RestartGuard>,
+    worker_count: usize,
+    queue_capacity: usize,
     execution_limits: MechanicsExecutionLimits,
     default_http_timeout_ms: Option<u64>,
     reqwest_client: reqwest::Client,
@@ -141,6 +146,12 @@ impl MechanicsPoolShared {
                 loop {
                     match rx.recv() {
                         Ok(PoolMessage::Run(pool_job)) => {
+                            if pool_job.canceled.load(Ordering::Acquire) {
+                                let _ = pool_job.reply.send(Err(MechanicsError::canceled(
+                                    "job timed out before execution",
+                                )));
+                                continue;
+                            }
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     runtime.run_source(pool_job.job)
@@ -184,8 +195,17 @@ impl MechanicsPoolShared {
     }
 
     fn reply_timeout(&self) -> Duration {
+        // `run` waits a bounded time for a reply, including possible queueing delay.
+        // Conservatively budget for one full execution slot per worker and queued item,
+        // plus this job's own execution time.
+        let slots = self
+            .queue_capacity
+            .saturating_add(self.worker_count)
+            .saturating_add(1);
+        let slots_u32 = u32::try_from(slots).unwrap_or(u32::MAX);
         self.execution_limits
             .max_execution_time
+            .saturating_mul(slots_u32)
             .saturating_add(Duration::from_secs(1))
     }
 }
@@ -234,6 +254,8 @@ impl MechanicsPool {
                 config.restart_window,
                 config.max_restarts_in_window,
             )),
+            worker_count: config.worker_count,
+            queue_capacity: config.queue_capacity,
             execution_limits: config.execution_limits,
             default_http_timeout_ms: config.default_http_timeout_ms,
             reqwest_client,
@@ -301,6 +323,15 @@ impl MechanicsPool {
     }
 
     /// Enqueues a job and blocks until the script finishes or fails.
+    ///
+    /// Timeout behavior:
+    /// 1. Waits up to [`MechanicsPoolConfig::enqueue_timeout`] for queue space.
+    /// 2. After enqueueing, waits up to a bounded reply timeout derived from pool size
+    ///    and [`MechanicsExecutionLimits::max_execution_time`].
+    ///
+    /// This keeps `run` from blocking indefinitely under load.
+    /// If the wait times out, the job is marked canceled before execution (best effort).
+    /// Jobs that already started continue until runtime limits terminate them.
     pub fn run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
@@ -312,9 +343,11 @@ impl MechanicsPool {
         }
 
         let (reply_tx, reply_rx) = bounded(1);
+        let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob {
             job,
             reply: reply_tx,
+            canceled: Arc::clone(&canceled),
         });
 
         match self.shared.tx.send_timeout(message, self.enqueue_timeout) {
@@ -341,9 +374,12 @@ impl MechanicsPool {
 
         match reply_rx.recv_timeout(self.shared.reply_timeout()) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(MechanicsError::worker_unavailable(
-                "timed out waiting for worker reply",
-            )),
+            Err(RecvTimeoutError::Timeout) => {
+                canceled.store(true, Ordering::Release);
+                Err(MechanicsError::queue_timeout(
+                    "timed out waiting for worker reply",
+                ))
+            }
             Err(_) => Err(MechanicsError::worker_unavailable(
                 "worker dropped reply channel",
             )),
@@ -351,6 +387,8 @@ impl MechanicsPool {
     }
 
     /// Attempts to enqueue a job without waiting for queue space.
+    ///
+    /// After successful enqueue, this uses the same bounded reply timeout behavior as [`Self::run`].
     pub fn try_run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.closed.load(Ordering::Acquire) {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
@@ -362,9 +400,11 @@ impl MechanicsPool {
         }
 
         let (reply_tx, reply_rx) = bounded(1);
+        let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob {
             job,
             reply: reply_tx,
+            canceled: Arc::clone(&canceled),
         });
 
         match self.shared.tx.try_send(message) {
@@ -386,9 +426,12 @@ impl MechanicsPool {
 
         match reply_rx.recv_timeout(self.shared.reply_timeout()) {
             Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err(MechanicsError::worker_unavailable(
-                "timed out waiting for worker reply",
-            )),
+            Err(RecvTimeoutError::Timeout) => {
+                canceled.store(true, Ordering::Release);
+                Err(MechanicsError::queue_timeout(
+                    "timed out waiting for worker reply",
+                ))
+            }
             Err(_) => Err(MechanicsError::worker_unavailable(
                 "worker dropped reply channel",
             )),
@@ -501,6 +544,8 @@ mod tests {
             closed: AtomicBool::new(false),
             restart_blocked: AtomicBool::new(false),
             restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+            worker_count: 1,
+            queue_capacity,
             execution_limits,
             default_http_timeout_ms: None,
             reqwest_client: reqwest::Client::new(),
@@ -589,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn run_maps_reply_timeout_to_worker_unavailable() {
+    fn run_maps_reply_timeout_to_queue_timeout() {
         let limits = MechanicsExecutionLimits {
             max_execution_time: Duration::from_millis(5),
             ..Default::default()
@@ -609,7 +654,7 @@ mod tests {
         let err = pool
             .run(job)
             .expect_err("no worker consumes queue; should hit reply timeout");
-        assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+        assert!(matches!(err, MechanicsError::QueueTimeout(_)));
     }
 
     #[test]
@@ -627,6 +672,7 @@ mod tests {
             .send(PoolMessage::Run(PoolJob {
                 job,
                 reply: reply_tx,
+                canceled: Arc::new(AtomicBool::new(false)),
             }))
             .expect("enqueue queued job");
 
