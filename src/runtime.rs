@@ -238,8 +238,18 @@ impl RuntimeInternal {
         let source = Source::from_bytes(source);
         let result = (|| -> JsResult<JsValue> {
             let module = Module::parse(source, None, ctx)?;
-            let _ = module.load_link_evaluate(ctx);
+            let module_eval = module.load_link_evaluate(ctx);
             ctx.run_jobs()?;
+            match module_eval.state() {
+                PromiseState::Fulfilled(_) => {}
+                PromiseState::Pending => {
+                    return Err(JsError::from_native(
+                        JsNativeError::runtime_limit()
+                            .with_message("Module evaluation promise did not settle"),
+                    ));
+                }
+                PromiseState::Rejected(e) => return Err(JsError::from_opaque(e)),
+            }
             if self.hooks.has_unhandled_rejections() {
                 return Err(JsError::from_native(
                     JsNativeError::error().with_message("Unhandled promise rejection"),
@@ -255,14 +265,17 @@ impl RuntimeInternal {
             let res = res.as_promise().unwrap_or(JsPromise::resolve(res, ctx));
 
             ctx.run_jobs()?;
-            if self.hooks.has_unhandled_rejections() {
-                return Err(JsError::from_native(
-                    JsNativeError::error().with_message("Unhandled promise rejection"),
-                ));
-            }
 
             match res.state() {
-                PromiseState::Fulfilled(v) => Ok(v),
+                PromiseState::Fulfilled(v) => {
+                    if self.hooks.has_unhandled_rejections() {
+                        Err(JsError::from_native(
+                            JsNativeError::error().with_message("Unhandled promise rejection"),
+                        ))
+                    } else {
+                        Ok(v)
+                    }
+                }
                 PromiseState::Pending => Err(JsError::from_native(
                     JsNativeError::runtime_limit()
                         .with_message("Default export promise did not settle"),
