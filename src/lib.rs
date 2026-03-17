@@ -65,16 +65,27 @@ pub(crate) struct Queue {
     promise_jobs: RefCell<VecDeque<PromiseJob>>,
     timeout_jobs: RefCell<BTreeMap<JsInstant, TimeoutJob>>,
     generic_jobs: RefCell<VecDeque<GenericJob>>,
+    tokio_rt: tokio::runtime::Runtime,
+    tokio_local: tokio::task::LocalSet,
 }
 
 impl Queue {
     /// Creates an empty job queue backing Boa's executor hooks.
     pub(crate) fn new() -> Self {
+        let tokio_rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let tokio_local = tokio::task::LocalSet::new();
+
         Self {
             async_jobs: RefCell::default(),
             promise_jobs: RefCell::default(),
             timeout_jobs: RefCell::default(),
             generic_jobs: RefCell::default(),
+            tokio_rt,
+            tokio_local,
         }
     }
 
@@ -133,12 +144,9 @@ impl JobExecutor for Queue {
 
     /// Bridges Boa's synchronous API to the async scheduler by running a local Tokio runtime.
     fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        task::LocalSet::default().block_on(&runtime, self.run_jobs_async(&RefCell::new(context)))
+        let this = Rc::clone(&self);
+        self.tokio_local
+            .block_on(&self.tokio_rt, this.run_jobs_async(&RefCell::new(context)))
     }
 
     /// Polls async jobs and drains task queues until no jobs remain.
