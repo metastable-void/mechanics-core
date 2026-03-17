@@ -1567,4 +1567,103 @@ mod tests {
 
         assert_eq!(value["json"]["hello"], json!("internet"));
     }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_http_timeout_from_pool_default() {
+        let endpoint = HttpEndpoint::new("https://httpbin.org/delay/3", HashMap::new());
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(400),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(10),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("internet", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"timeout"}));
+        let err = pool.run(job).expect_err("request should timeout");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(
+                    msg.contains("timed out")
+                        || msg.contains("timeout")
+                        || msg.contains("deadline")
+                        || msg.contains("request")
+                );
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_timeout_overrides_pool_default() {
+        let endpoint = HttpEndpoint::new("https://httpbin.org/delay/1", HashMap::new())
+            .with_timeout_ms(Some(4_000));
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(200),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(10),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("internet", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"override"}));
+        let value = pool.run(job).expect("endpoint-level timeout should allow success");
+        assert_eq!(value["json"]["hello"], json!("override"));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_sends_custom_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Mechanics-Test".to_owned(), "header-check".to_owned());
+        let endpoint = HttpEndpoint::new("https://httpbin.org/anything", headers);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("internet", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"headers"}));
+        let value = pool.run(job).expect("internet endpoint call should succeed");
+
+        assert_eq!(value["json"]["hello"], json!("headers"));
+        assert_eq!(value["headers"]["X-Mechanics-Test"], json!("header-check"));
+    }
 }
