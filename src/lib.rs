@@ -991,3 +991,335 @@ impl Drop for MechanicsPool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    fn make_job(source: &str, config: MechanicsConfig, arg: Value) -> MechanicsJob {
+        MechanicsJob {
+            mod_source: Arc::<str>::from(source),
+            arg: Arc::new(arg),
+            config: Arc::new(config),
+        }
+    }
+
+    fn spawn_json_server(delay: Duration, response_json: &'static str) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let addr = listener.local_addr().expect("read local addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept one connection");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set read timeout");
+
+            let mut buf = [0_u8; 4096];
+            let _ = stream.read(&mut buf);
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+
+            let body = response_json.as_bytes();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).expect("write headers");
+            stream.write_all(body).expect("write body");
+            let _ = stream.flush();
+        });
+
+        (format!("http://{addr}"), handle)
+    }
+
+    fn endpoint_config(name: &str, endpoint: HttpEndpoint) -> MechanicsConfig {
+        let mut endpoints = HashMap::new();
+        endpoints.insert(name.to_owned(), endpoint);
+        MechanicsConfig::new(endpoints)
+    }
+
+    #[test]
+    fn run_simple_module_returns_value() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            export default function main(arg) {
+                return { ok: true, got: arg };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), json!({"n": 7}));
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["ok"], json!(true));
+        assert_eq!(value["got"]["n"], json!(7));
+    }
+
+    #[test]
+    fn loop_iteration_limit_stops_infinite_loop() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(5),
+                max_loop_iterations: 1_000,
+                max_recursion_depth: 512,
+                max_stack_size: 10 * 1024,
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            export default function main(_arg) {
+                while (true) {}
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool.run(job).expect_err("must hit loop iteration limit");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("Maximum loop iteration limit"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn execution_timeout_stops_slow_async_job() {
+        let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);
+        let endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(2_000));
+        let config = endpoint_config("slow", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_millis(120),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("slow", arg);
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let err = pool.run(job).expect_err("must time out");
+        let _ = server.join();
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("Maximum execution time exceeded"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn try_run_reports_queue_full() {
+        let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);
+        let blocking_endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(2_000));
+        let blocking_cfg = endpoint_config("slow", blocking_endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            queue_capacity: 1,
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let blocking = make_job(
+            r#"
+                import endpoint from "mechanics:endpoint";
+                export default async function main(arg) {
+                    return await endpoint("slow", arg);
+                }
+            "#,
+            blocking_cfg,
+            Value::Null,
+        );
+        let queued = make_job(
+            r#"export default function main() { return { queued: true }; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        let over = make_job(
+            r#"export default function main() { return { over: true }; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+
+        let pool_ref = Arc::new(pool);
+        let p = Arc::clone(&pool_ref);
+        let t = thread::spawn(move || p.run(blocking));
+        thread::sleep(Duration::from_millis(30));
+
+        let _ = pool_ref.try_run(queued);
+        let err = pool_ref.try_run(over).expect_err("third submit should be full");
+        assert!(matches!(err, MechanicsError::QueueFull(_)));
+
+        let _ = t.join();
+        let _ = server.join();
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn run_reports_enqueue_timeout_when_queue_is_full() {
+        let (url, server) = spawn_json_server(Duration::from_millis(350), r#"{"ok":true}"#);
+        let blocking_endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(2_000));
+        let blocking_cfg = endpoint_config("slow", blocking_endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            queue_capacity: 1,
+            enqueue_timeout: Duration::from_millis(30),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let blocking = make_job(
+            r#"
+                import endpoint from "mechanics:endpoint";
+                export default async function main(arg) {
+                    return await endpoint("slow", arg);
+                }
+            "#,
+            blocking_cfg,
+            Value::Null,
+        );
+        let queued = make_job(
+            r#"export default function main() { return 1; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        let timeout = make_job(
+            r#"export default function main() { return 2; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+
+        let pool_ref = Arc::new(pool);
+        let p = Arc::clone(&pool_ref);
+        let t = thread::spawn(move || p.run(blocking));
+        thread::sleep(Duration::from_millis(30));
+        let _ = pool_ref.try_run(queued);
+        let err = pool_ref.run(timeout).expect_err("enqueue must time out");
+        assert!(matches!(err, MechanicsError::QueueTimeout(_)));
+
+        let _ = t.join();
+        let _ = server.join();
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn endpoint_uses_pool_default_timeout() {
+        let (url, server) = spawn_json_server(Duration::from_millis(180), r#"{"ok":true}"#);
+        let endpoint = HttpEndpoint::new(&url, HashMap::new());
+        let config = endpoint_config("slow", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(60),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("slow", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"world"}));
+        let err = pool.run(job).expect_err("request should timeout");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("timed out") || msg.contains("timeout"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+
+        let _ = server.join();
+    }
+
+    #[test]
+    #[ignore = "requires local socket bind permission in the execution environment"]
+    fn endpoint_specific_timeout_overrides_pool_default() {
+        let (url, server) = spawn_json_server(Duration::from_millis(150), r#"{"ok":true}"#);
+        let endpoint = HttpEndpoint::new(&url, HashMap::new()).with_timeout_ms(Some(400));
+        let config = endpoint_config("slow", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(40),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("slow", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"world"}));
+        let value = pool.run(job).expect("endpoint-level timeout should allow success");
+        assert_eq!(value["ok"], json!(true));
+
+        let _ = server.join();
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_roundtrip_httpbin() {
+        let endpoint = HttpEndpoint::new("https://httpbin.org/post", HashMap::new());
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("internet", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"internet"}));
+        let value = pool.run(job).expect("internet endpoint call should succeed");
+
+        assert_eq!(value["json"]["hello"], json!("internet"));
+    }
+}
