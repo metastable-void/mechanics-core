@@ -55,13 +55,9 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 - Previous location: `Cargo.toml:19`
 - Previous issue: dependency was present but not used.
 
-10. Potentially over-broad Tokio feature set.
-- Location: `Cargo.toml:24`
-- Current: `tokio = { features = ["full"] }`
-- Observation: code uses current-thread runtime, local set, sleep, and task yield; `full` may be broader than needed.
+10. [DONE] Potentially over-broad Tokio feature set.
+- Fixed in: `Cargo.toml` (`tokio` now uses `default-features = false` with `features = ["rt", "time"]`).
+- Previous issue: `full` feature set was broader than required by current usage.
 
 ## Suggested fix order
-1. Fix pending Promise behavior (item 1).
-2. Decide and implement policy for uncaught queued job errors (item 2).
-3. Tighten HTTP semantics (items 5, 6).
-4. Reduce Tokio feature set if desired (item 10).
+All listed items are currently marked as done.
