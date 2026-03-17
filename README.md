@@ -21,6 +21,10 @@ See:
 - [ts-types/](ts-types/) for bundled `.d.ts` declarations of synthetic runtime modules.
 - [examples/test-script.rs](examples/test-script.rs) for CLI-style invocation.
 
+## Documentation path policy
+- In project docs, record file paths as project-relative paths (for example, `src/http.rs`).
+- Do not record arbitrary absolute filesystem paths.
+
 ## Current audit report
 A full inconsistency/redundancy report is maintained at:
 - [docs/audit-findings.md](docs/audit-findings.md)

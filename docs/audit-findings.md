@@ -21,8 +21,8 @@ Validation run:
 - Added per-endpoint override `HttpEndpoint::with_response_max_bytes(...)` / `response_max_bytes` config field.
 - Switched response read path to chunked accumulation with limit enforcement, plus early `Content-Length` guard.
 - Verification:
-- Unit tests: [`src/http/tests/response_limit.rs`](/home/menhera/projects/mechanics-core/src/http/tests/response_limit.rs)
-- Integration tests: [`src/pool/tests/endpoint_network.rs`](/home/menhera/projects/mechanics-core/src/pool/tests/endpoint_network.rs) (`endpoint_uses_pool_default_response_max_bytes`, `endpoint_response_max_bytes_overrides_pool_default`)
+- Unit tests: `src/http/tests/response_limit.rs`
+- Integration tests: `src/pool/tests/endpoint_network.rs` (`endpoint_uses_pool_default_response_max_bytes`, `endpoint_response_max_bytes_overrides_pool_default`)
 
 ### 2) `mechanics:form-urlencoded.encode` output order is non-deterministic
 - Severity: low
@@ -31,7 +31,7 @@ Validation run:
 - Switched form-urlencode record handling to ordered-map semantics (`BTreeMap`) in synthetic module encode/decode paths.
 - `encode` now emits key-value pairs in lexical key order deterministically.
 - Verification:
-- Regression test: [`src/pool/tests/synthetic_modules.rs`](/home/menhera/projects/mechanics-core/src/pool/tests/synthetic_modules.rs) (`form_urlencoded_module_encode_is_key_ordered`)
+- Regression test: `src/pool/tests/synthetic_modules.rs` (`form_urlencoded_module_encode_is_key_ordered`)
 
 ### 3) Endpoint configuration validation is fail-late (first call), not fail-fast
 - Severity: low
@@ -42,7 +42,7 @@ Validation run:
 - `MechanicsConfig` deserialization is now validation-backed (invalid configs fail during deserialization).
 - Validation is intentionally non-caching and does not introduce cross-job state.
 - Verification:
-- New tests in [`src/http/tests/serde_config.rs`](/home/menhera/projects/mechanics-core/src/http/tests/serde_config.rs):
+- New tests in `src/http/tests/serde_config.rs`:
 - `mechanics_config_new_rejects_invalid_endpoint_configuration`
 - `mechanics_config_deserialize_rejects_invalid_endpoint_configuration`
 
