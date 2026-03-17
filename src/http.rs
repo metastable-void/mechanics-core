@@ -1,8 +1,12 @@
 use boa_engine::{JsData, Trace};
 use boa_gc::Finalize;
-use reqwest::header::{HeaderMap, HeaderName};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    io::{Error, ErrorKind},
+    time::Duration,
+};
 
 /// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
 pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
@@ -53,6 +57,28 @@ impl HttpEndpoint {
         self
     }
 
+    fn build_headers(&self) -> std::io::Result<HeaderMap> {
+        let mut headers = HeaderMap::new();
+        for (k, v) in &self.headers {
+            let name = HeaderName::try_from(k.as_str()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid header name `{k}`: {e}"),
+                )
+            })?;
+            let value = HeaderValue::try_from(v.as_str()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid header value for `{k}`: {e}"),
+                )
+            })?;
+            headers.insert(name, value);
+        }
+        headers.insert(USER_AGENT, HeaderValue::from_static(Self::USER_AGENT));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        Ok(headers)
+    }
+
     /// Sends a JSON POST request and deserializes the JSON response into `Res`.
     pub(crate) async fn post<Req: serde::Serialize, Res: serde::de::DeserializeOwned>(
         &self,
@@ -62,14 +88,7 @@ impl HttpEndpoint {
     ) -> std::io::Result<Res> {
         let json = serde_json::to_string(req_data).map_err(into_io_error)?;
         let url = reqwest::Url::parse(&self.url).map_err(into_io_error)?;
-        let mut headers = HeaderMap::new();
-        for (k, v) in &self.headers {
-            if let (Ok(k), Ok(v)) = (k.try_into() as Result<HeaderName, _>, v.try_into()) {
-                headers.insert(k, v);
-            }
-        }
-        headers.insert("User-Agent", Self::USER_AGENT.try_into().unwrap());
-        headers.insert("Content-Type", "application/json".try_into().unwrap());
+        let headers = self.build_headers()?;
         let timeout_ms = self.timeout_ms.or(default_timeout_ms);
         let mut req = client.post(url).headers(headers).body(json);
         if let Some(timeout_ms) = timeout_ms {
@@ -83,6 +102,35 @@ impl HttpEndpoint {
         };
         let res: Res = res.json().await.map_err(into_io_error)?;
         Ok(res)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_headers_rejects_invalid_name() {
+        let mut headers = HashMap::new();
+        headers.insert("bad header".to_owned(), "ok".to_owned());
+        let endpoint = HttpEndpoint::new("https://example.com", headers);
+        let err = endpoint
+            .build_headers()
+            .expect_err("invalid header name must fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("invalid header name"));
+    }
+
+    #[test]
+    fn build_headers_rejects_invalid_value() {
+        let mut headers = HashMap::new();
+        headers.insert("x-test".to_owned(), "bad\r\nvalue".to_owned());
+        let endpoint = HttpEndpoint::new("https://example.com", headers);
+        let err = endpoint
+            .build_headers()
+            .expect_err("invalid header value must fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("invalid header value"));
     }
 }
 

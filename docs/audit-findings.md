@@ -32,10 +32,10 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 - Previous location: `src/http.rs:67-68`
 - Previous issue: response was parsed as JSON regardless of status.
 
-6. Invalid configured headers are silently dropped.
-- Location: `src/http.rs:55-58`
-- Why: invalid header key/value parse failures are ignored.
-- Impact: misconfiguration is hard to detect; requests may miss required auth/custom headers.
+6. [DONE] Invalid configured headers are silently dropped.
+- Fixed in: `src/http.rs` (strict header validation and explicit `InvalidInput` errors), `src/pool.rs` (regression test).
+- Previous location: `src/http.rs:55-58`
+- Previous issue: invalid header key/value parse failures were ignored.
 
 ## Low
 

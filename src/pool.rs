@@ -942,6 +942,37 @@ mod tests {
     }
 
     #[test]
+    fn invalid_endpoint_header_is_reported_as_execution_error() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let mut headers = HashMap::new();
+        headers.insert("bad header".to_owned(), "value".to_owned());
+        let endpoint = HttpEndpoint::new("https://example.com/anything", headers);
+        let config = endpoint_config("bad", endpoint);
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(arg) {
+                return await endpoint("bad", arg);
+            }
+        "#;
+        let job = make_job(source, config, json!({"hello":"headers"}));
+        let err = pool
+            .run(job)
+            .expect_err("invalid configured header must fail");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("invalid header name"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
     fn pending_default_promise_is_reported_as_execution_error() {
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
