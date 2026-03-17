@@ -1088,6 +1088,164 @@ mod tests {
         MechanicsConfig::new(endpoints)
     }
 
+    fn synthetic_pool(
+        queue_capacity: usize,
+        execution_limits: MechanicsExecutionLimits,
+    ) -> MechanicsPool {
+        let (tx, rx) = bounded(queue_capacity);
+        let (exit_tx, exit_rx) = bounded(8);
+        let shared = Arc::new(MechanicsPoolShared {
+            tx,
+            rx,
+            exit_tx,
+            exit_rx,
+            workers: Mutex::new(HashMap::new()),
+            next_worker_id: AtomicUsize::new(0),
+            closed: AtomicBool::new(false),
+            restart_blocked: AtomicBool::new(false),
+            restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+            execution_limits,
+            default_http_timeout_ms: None,
+            reqwest_client: reqwest::Client::new(),
+        });
+
+        MechanicsPool {
+            shared,
+            enqueue_timeout: Duration::from_millis(10),
+            supervisor: None,
+        }
+    }
+
+    #[test]
+    fn pool_new_rejects_invalid_config() {
+        let err = match MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 0,
+            ..Default::default()
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("worker_count=0 must fail"),
+        };
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+
+        let err = match MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            queue_capacity: 0,
+            ..Default::default()
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("queue_capacity=0 must fail"),
+        };
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+
+        let err = match MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            queue_capacity: 1,
+            max_restarts_in_window: 0,
+            ..Default::default()
+        }) {
+            Err(err) => err,
+            Ok(_) => panic!("max_restarts_in_window=0 must fail"),
+        };
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+    }
+
+    #[test]
+    fn run_and_try_run_fail_when_pool_closed() {
+        let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
+        pool.shared.closed.store(true, Ordering::Release);
+
+        let job = make_job(
+            r#"export default function main() { return 1; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        let err = pool.run(job.clone()).expect_err("closed pool must reject run");
+        assert!(matches!(err, MechanicsError::PoolClosed(_)));
+
+        let err = pool.try_run(job).expect_err("closed pool must reject try_run");
+        assert!(matches!(err, MechanicsError::PoolClosed(_)));
+    }
+
+    #[test]
+    fn run_and_try_run_fail_when_workers_unavailable_and_restart_blocked() {
+        let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
+        pool.shared.restart_blocked.store(true, Ordering::Release);
+
+        let job = make_job(
+            r#"export default function main() { return 1; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        let err = pool
+            .run(job.clone())
+            .expect_err("must fail when no workers and restart blocked");
+        assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+
+        let err = pool
+            .try_run(job)
+            .expect_err("must fail when no workers and restart blocked");
+        assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+    }
+
+    #[test]
+    fn run_maps_reply_timeout_to_worker_unavailable() {
+        let limits = MechanicsExecutionLimits {
+            max_execution_time: Duration::from_millis(5),
+            ..Default::default()
+        };
+        let pool = synthetic_pool(8, limits);
+
+        {
+            let mut workers = pool.shared.workers.lock().expect("workers mutex poisoned");
+            workers.insert(0, thread::spawn(|| {}));
+        }
+
+        let job = make_job(
+            r#"export default function main() { return 1; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        let err = pool
+            .run(job)
+            .expect_err("no worker consumes queue; should hit reply timeout");
+        assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+    }
+
+    #[test]
+    fn drop_cancels_queued_jobs() {
+        let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
+        let (reply_tx, reply_rx) = bounded(1);
+
+        let job = make_job(
+            r#"export default function main() { return 1; }"#,
+            MechanicsConfig::new(HashMap::new()),
+            Value::Null,
+        );
+        pool.shared
+            .tx
+            .send(PoolMessage::Run(PoolJob {
+                job,
+                reply: reply_tx,
+            }))
+            .expect("enqueue queued job");
+
+        drop(pool);
+        let canceled = reply_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("drop should send canceled error");
+        assert!(matches!(canceled, Err(MechanicsError::Canceled(_))));
+    }
+
+    #[test]
+    fn restart_guard_blocks_after_limit() {
+        let mut guard = RestartGuard::new(Duration::from_secs(1), 2);
+        let t0 = Instant::now();
+        assert!(guard.allow_restart(t0));
+        assert!(guard.allow_restart(t0 + Duration::from_millis(100)));
+        assert!(!guard.allow_restart(t0 + Duration::from_millis(200)));
+        assert!(guard.allow_restart(t0 + Duration::from_secs(2)));
+    }
+
     #[test]
     fn run_simple_module_returns_value() {
         let pool = MechanicsPool::new(MechanicsPoolConfig {
