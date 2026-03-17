@@ -4,11 +4,11 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 
 ## Critical / high
 
-1. Pending Promise results are returned as `{}` instead of timing out or failing.
-- Location: `src/runtime.rs:192-216`, `src/runtime.rs:226-233`
-- Why: `PromiseState::Pending` is treated as success (`Ok(res.into())`), then converted to JSON object.
-- Impact: jobs that never resolve can appear successful and bypass expected timeout semantics.
-- Repro: module returning `new Promise(() => {})` currently exits successfully with `{}`.
+1. [DONE] Pending Promise results were returned as `{}` instead of timing out or failing.
+- Fixed in: `src/runtime.rs` (pending state now returns execution error), `src/pool.rs` (regression test).
+- Previous location: `src/runtime.rs:192-216`, `src/runtime.rs:226-233`
+- Previous behavior: `PromiseState::Pending` was treated as success (`Ok(res.into())`) and converted to JSON object.
+- Previous impact: jobs that never resolved could appear successful and bypass expected timeout semantics.
 
 ## Medium
 

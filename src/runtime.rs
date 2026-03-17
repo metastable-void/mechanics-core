@@ -212,7 +212,10 @@ impl RuntimeInternal {
 
             match res.state() {
                 PromiseState::Fulfilled(v) => Ok(v),
-                PromiseState::Pending => Ok(res.into()),
+                PromiseState::Pending => Err(JsError::from_native(
+                    JsNativeError::runtime_limit()
+                        .with_message("Default export promise did not settle"),
+                )),
                 PromiseState::Rejected(e) => Err(JsError::from_opaque(e)),
             }
         })();

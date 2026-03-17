@@ -783,6 +783,31 @@ mod tests {
     }
 
     #[test]
+    fn pending_default_promise_is_reported_as_execution_error() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            export default function main(_arg) {
+                return new Promise(() => {});
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("pending promise should not be treated as success");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("did not settle") || msg.contains("pending"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
     fn oversized_execution_timeout_is_reported_as_execution_error() {
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
