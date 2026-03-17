@@ -19,12 +19,13 @@ The crate API is exported from `src/lib.rs`:
 - module source (`mod_source`),
 - JSON argument (`arg`),
 - endpoint config (`config`).
-3. `MechanicsConfig` validation is fail-fast:
+3. If a `MechanicsJob` is deserialized from JSON, `mod_source` must be non-empty.
+4. `MechanicsConfig` validation is fail-fast:
 - `MechanicsConfig::new(...)` validates endpoint configuration before returning.
 - `serde` deserialization into `MechanicsConfig` also validates and fails on invalid endpoint config.
-4. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
-5. The module default export is invoked with one argument.
-6. Result is converted to JSON and returned.
+5. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
+6. The module default export is invoked with one argument.
+7. Result is converted to JSON and returned.
 
 ## JavaScript contract
 Your module should export a callable default export.
@@ -75,8 +76,11 @@ Resolution behavior:
 - Empty response bodies are represented as `response.body = null`.
 - Endpoint result is always an object: `{ body, headers }`.
 - `headers` includes only names allowlisted by endpoint `exposed_response_headers` (keys are lowercase).
+- If an exposed header has multiple values, they are joined with `", "`.
+- If an exposed header value is non-UTF-8, it is represented with lossy UTF-8 decoding.
 - Configured headers are validated; invalid names/values fail the call.
 - JS `options.headers` can override only names allowlisted by endpoint `overridable_request_headers` (case-insensitive).
+- Header precedence is: auto defaults < configured endpoint headers < JS allowlisted overrides.
 - If missing, `User-Agent` is injected automatically.
 - If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
@@ -92,6 +96,7 @@ Resolution behavior:
 - `utf8`: `string`.
 - `bytes`: `TypedArray | ArrayBuffer | DataView` (treated as bytes).
 - for `GET`/`DELETE`, `body` must be omitted or `null`.
+- `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 Config shape is JSON-friendly and snake_case (`serde`):
 - endpoint definitions use `method`, `url_template`, `url_param_specs`, and `query_specs`.
@@ -193,11 +198,15 @@ Runtime registers a synthetic module named `mechanics:base64` with:
 Notes:
 - `base64url` encoding is emitted without padding.
 - decode accepts both padded and unpadded forms.
+- `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 ## Built-in module: `mechanics:hex`
 Runtime registers a synthetic module named `mechanics:hex` with:
 - `encode(bufferLike: TypedArray | ArrayBuffer | DataView): string`
 - `decode(encoded: string): Uint8Array`
+
+Notes:
+- `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 ## Built-in module: `mechanics:base32`
 Runtime registers a synthetic module named `mechanics:base32` with:
@@ -207,10 +216,14 @@ Runtime registers a synthetic module named `mechanics:base32` with:
 Notes:
 - decode is case-insensitive for alphabetic input.
 - decode accepts both padded and unpadded forms.
+- `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 ## Built-in module: `mechanics:rand`
 Runtime registers a synthetic module named `mechanics:rand` with default export:
 - `fillRandom(bufferLike: TypedArray | ArrayBuffer | DataView): void`
+
+Notes:
+- `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 ## Type declarations
 - `ts-types/` contains `.d.ts` declarations for runtime synthetic modules.

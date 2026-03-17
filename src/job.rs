@@ -7,6 +7,7 @@ use std::{sync::Arc, time::Duration};
 ///
 /// Jobs are expected to be self-contained for stateless runtime execution.
 /// Do not assume any cross-job cache residency in workers.
+/// When deserialized, `mod_source` must be non-empty.
 #[derive(Debug, Clone)]
 pub struct MechanicsJob {
     /// ECMAScript module source containing a `default` export callable.

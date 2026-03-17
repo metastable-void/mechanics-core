@@ -372,6 +372,26 @@ impl HttpEndpoint {
         options: &EndpointCallOptions,
     ) -> std::io::Result<HeaderMap> {
         let mut headers = HeaderMap::new();
+        // Header precedence is explicit:
+        // 1) auto defaults, 2) endpoint configured headers, 3) JS allowlisted overrides.
+        let user_agent = HeaderValue::try_from(Self::USER_AGENT).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("invalid default User-Agent header: {e}"),
+            )
+        })?;
+        headers.insert(USER_AGENT, user_agent);
+
+        if let Some(default_content_type) = default_content_type {
+            let content_type = HeaderValue::try_from(default_content_type).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid default Content-Type header: {e}"),
+                )
+            })?;
+            headers.insert(CONTENT_TYPE, content_type);
+        }
+
         for (k, v) in &self.headers {
             let name = HeaderName::try_from(k.as_str()).map_err(|e| {
                 Error::new(
@@ -386,28 +406,6 @@ impl HttpEndpoint {
                 )
             })?;
             headers.insert(name, value);
-        }
-
-        if !headers.contains_key(USER_AGENT) {
-            let user_agent = HeaderValue::try_from(Self::USER_AGENT).map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("invalid default User-Agent header: {e}"),
-                )
-            })?;
-            headers.insert(USER_AGENT, user_agent);
-        }
-
-        if let Some(default_content_type) = default_content_type
-            && !headers.contains_key(CONTENT_TYPE)
-        {
-            let content_type = HeaderValue::try_from(default_content_type).map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("invalid default Content-Type header: {e}"),
-                )
-            })?;
-            headers.insert(CONTENT_TYPE, content_type);
         }
 
         let allowed_overrides = allowlisted_header_names(

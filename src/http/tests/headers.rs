@@ -53,6 +53,33 @@ fn build_headers_rejects_non_allowlisted_override() {
 }
 
 #[test]
+fn build_headers_applies_intended_precedence_order() {
+    let endpoint = HttpEndpoint::new(
+        HttpMethod::Post,
+        "https://example.com",
+        HashMap::from([
+            ("content-type".to_owned(), "configured/type".to_owned()),
+            ("user-agent".to_owned(), "configured-agent".to_owned()),
+        ]),
+    )
+    .with_overridable_request_headers(vec!["content-type".to_owned()]);
+
+    let mut options = EndpointCallOptions::default();
+    options
+        .headers
+        .insert("content-type".to_owned(), "override/type".to_owned());
+
+    let headers = endpoint
+        .build_headers(Some("application/json"), &options)
+        .expect("header layering should succeed");
+
+    // JS override beats configured and auto default.
+    assert_eq!(headers["content-type"], "override/type");
+    // Configured beats auto default.
+    assert_eq!(headers["user-agent"], "configured-agent");
+}
+
+#[test]
 fn extract_exposed_response_headers_is_case_insensitive() {
     let mut headers = HeaderMap::new();
     headers.insert(
