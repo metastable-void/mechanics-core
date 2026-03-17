@@ -74,8 +74,20 @@ impl HttpEndpoint {
             })?;
             headers.insert(name, value);
         }
-        headers.insert(USER_AGENT, HeaderValue::from_static(Self::USER_AGENT));
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let user_agent = HeaderValue::try_from(Self::USER_AGENT).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("invalid default User-Agent header: {e}"),
+            )
+        })?;
+        headers.insert(USER_AGENT, user_agent);
+        let content_type = HeaderValue::try_from("application/json").map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                format!("invalid default Content-Type header: {e}"),
+            )
+        })?;
+        headers.insert(CONTENT_TYPE, content_type);
         Ok(headers)
     }
 

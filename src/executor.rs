@@ -27,15 +27,14 @@ pub(crate) struct Queue {
 
 impl Queue {
     /// Creates an empty job queue backing Boa's executor hooks.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new() -> std::io::Result<Self> {
         let tokio_rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .unwrap();
+            .build()?;
 
         let tokio_local = tokio::task::LocalSet::new();
 
-        Self {
+        Ok(Self {
             async_jobs: RefCell::default(),
             promise_jobs: RefCell::default(),
             timeout_jobs: RefCell::default(),
@@ -43,7 +42,7 @@ impl Queue {
             deadline: RefCell::default(),
             tokio_rt,
             tokio_local,
-        }
+        })
     }
 
     fn timeout_error() -> JsError {
@@ -135,7 +134,18 @@ impl JobExecutor for Queue {
                     .push(t);
             }
             Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
-            _ => panic!("unsupported job type"),
+            _ => {
+                let realm = context.realm().clone();
+                let err = GenericJob::new(
+                    |_| {
+                        Err(JsError::from_native(
+                            JsNativeError::typ().with_message("unsupported job type"),
+                        ))
+                    },
+                    realm,
+                );
+                self.generic_jobs.borrow_mut().push_back(err);
+            }
         }
     }
 
@@ -276,7 +286,7 @@ mod tests {
 
     #[test]
     fn timeout_jobs_at_same_instant_do_not_overwrite_each_other() {
-        let queue = Queue::new();
+        let queue = Queue::new().expect("queue runtime should initialize");
         let mut context = Context::default();
         let at = context.clock().now();
 

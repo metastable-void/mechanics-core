@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -127,7 +127,21 @@ struct MechanicsPoolShared {
 }
 
 impl MechanicsPoolShared {
-    fn spawn_worker(shared: &Arc<Self>) -> usize {
+    fn workers_guard(&self) -> MutexGuard<'_, HashMap<usize, thread::JoinHandle<()>>> {
+        match self.workers.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn restart_guard_guard(&self) -> MutexGuard<'_, RestartGuard> {
+        match self.restart_guard.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn spawn_worker(shared: &Arc<Self>) -> Result<usize, MechanicsError> {
         let worker_id = shared.next_worker_id.fetch_add(1, Ordering::Relaxed);
 
         let rx = shared.rx.clone();
@@ -137,67 +151,75 @@ impl MechanicsPoolShared {
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
 
-        let handle = thread::spawn(move || {
-            if start_rx.recv().is_err() {
-                let _ = exit_tx.send(WorkerExit { worker_id });
-                return;
-            }
-
-            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut runtime = RuntimeInternal::new_with_client(reqwest_client);
-                runtime.set_execution_limits(execution_limits);
-                runtime.set_default_endpoint_timeout_ms(default_http_timeout_ms);
-
-                loop {
-                    match rx.recv() {
-                        Ok(PoolMessage::Run(pool_job)) => {
-                            if pool_job.canceled.load(Ordering::Acquire) {
-                                let _ = pool_job.reply.send(Err(MechanicsError::canceled(
-                                    "job timed out before execution",
-                                )));
-                                continue;
-                            }
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    runtime.run_source(pool_job.job)
-                                }));
-                            match result {
-                                Ok(result) => {
-                                    let _ = pool_job.reply.send(result);
-                                }
-                                Err(_) => {
-                                    let _ = pool_job.reply.send(Err(MechanicsError::panic(
-                                        "worker panicked while running job",
-                                    )));
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(PoolMessage::Shutdown) => break,
-                        Err(_) => break,
-                    }
+        let handle = thread::Builder::new()
+            .name(format!("mechanics-worker-{worker_id}"))
+            .spawn(move || {
+                if start_rx.recv().is_err() {
+                    let _ = exit_tx.send(WorkerExit { worker_id });
+                    return;
                 }
-            }));
 
-            if run.is_err() {
-                // If the worker panicked outside task execution (runtime setup/loop),
-                // notify a synthetic panic event via restart path.
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut runtime = match RuntimeInternal::new_with_client(reqwest_client) {
+                        Ok(runtime) => runtime,
+                        Err(_) => return,
+                    };
+                    runtime.set_execution_limits(execution_limits);
+                    runtime.set_default_endpoint_timeout_ms(default_http_timeout_ms);
+
+                    loop {
+                        match rx.recv() {
+                            Ok(PoolMessage::Run(pool_job)) => {
+                                if pool_job.canceled.load(Ordering::Acquire) {
+                                    let _ = pool_job.reply.send(Err(MechanicsError::canceled(
+                                        "job timed out before execution",
+                                    )));
+                                    continue;
+                                }
+                                let result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        runtime.run_source(pool_job.job)
+                                    }));
+                                match result {
+                                    Ok(result) => {
+                                        let _ = pool_job.reply.send(result);
+                                    }
+                                    Err(_) => {
+                                        let _ = pool_job.reply.send(Err(MechanicsError::panic(
+                                            "worker panicked while running job",
+                                        )));
+                                        break;
+                                    }
+                                }
+                            }
+                            Ok(PoolMessage::Shutdown) => break,
+                            Err(_) => break,
+                        }
+                    }
+                }));
+
+                if run.is_err() {
+                    // If the worker panicked outside task execution (runtime setup/loop),
+                    // notify a synthetic panic event via restart path.
+                    let _ = exit_tx.send(WorkerExit { worker_id });
+                    return;
+                }
+
                 let _ = exit_tx.send(WorkerExit { worker_id });
-                return;
-            }
+            })
+            .map_err(|e| {
+                MechanicsError::runtime_pool(format!("failed to spawn worker thread: {e}"))
+            })?;
 
-            let _ = exit_tx.send(WorkerExit { worker_id });
-        });
-
-        let mut workers = shared.workers.lock().expect("workers mutex poisoned");
+        let mut workers = shared.workers_guard();
         workers.insert(worker_id, handle);
         let _ = start_tx.send(());
         shared.restart_blocked.store(false, Ordering::Release);
-        worker_id
+        Ok(worker_id)
     }
 
     fn live_workers(&self) -> usize {
-        self.workers.lock().expect("workers mutex poisoned").len()
+        self.workers_guard().len()
     }
 }
 
@@ -270,58 +292,61 @@ impl MechanicsPool {
         });
 
         for _ in 0..config.worker_count {
-            MechanicsPoolShared::spawn_worker(&shared);
+            MechanicsPoolShared::spawn_worker(&shared)?;
         }
 
         let supervisor_shared = Arc::clone(&shared);
-        let supervisor = thread::spawn(move || {
-            loop {
-                if supervisor_shared.closed.load(Ordering::Acquire) {
-                    break;
-                }
-
-                match supervisor_shared
-                    .exit_rx
-                    .recv_timeout(Duration::from_millis(100))
-                {
-                    Ok(event) => {
-                        let maybe_old = {
-                            let mut workers = supervisor_shared
-                                .workers
-                                .lock()
-                                .expect("workers mutex poisoned");
-                            workers.remove(&event.worker_id)
-                        };
-                        if let Some(handle) = maybe_old {
-                            let _ = handle.join();
-                        }
-
-                        if supervisor_shared.closed.load(Ordering::Acquire) {
-                            continue;
-                        }
-
-                        let now = Instant::now();
-                        let can_restart = {
-                            let mut guard = supervisor_shared
-                                .restart_guard
-                                .lock()
-                                .expect("restart guard mutex poisoned");
-                            guard.allow_restart(now)
-                        };
-
-                        if can_restart {
-                            MechanicsPoolShared::spawn_worker(&supervisor_shared);
-                        } else {
-                            supervisor_shared
-                                .restart_blocked
-                                .store(true, Ordering::Release);
-                        }
+        let supervisor = thread::Builder::new()
+            .name("mechanics-supervisor".to_owned())
+            .spawn(move || {
+                loop {
+                    if supervisor_shared.closed.load(Ordering::Acquire) {
+                        break;
                     }
-                    Err(RecvTimeoutError::Timeout) => {}
-                    Err(RecvTimeoutError::Disconnected) => break,
+
+                    match supervisor_shared
+                        .exit_rx
+                        .recv_timeout(Duration::from_millis(100))
+                    {
+                        Ok(event) => {
+                            let maybe_old = {
+                                let mut workers = supervisor_shared.workers_guard();
+                                workers.remove(&event.worker_id)
+                            };
+                            if let Some(handle) = maybe_old {
+                                let _ = handle.join();
+                            }
+
+                            if supervisor_shared.closed.load(Ordering::Acquire) {
+                                continue;
+                            }
+
+                            let now = Instant::now();
+                            let can_restart = {
+                                let mut guard = supervisor_shared.restart_guard_guard();
+                                guard.allow_restart(now)
+                            };
+
+                            if can_restart {
+                                if MechanicsPoolShared::spawn_worker(&supervisor_shared).is_err() {
+                                    supervisor_shared
+                                        .restart_blocked
+                                        .store(true, Ordering::Release);
+                                }
+                            } else {
+                                supervisor_shared
+                                    .restart_blocked
+                                    .store(true, Ordering::Release);
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
                 }
-            }
-        });
+            })
+            .map_err(|e| {
+                MechanicsError::runtime_pool(format!("failed to spawn supervisor thread: {e}"))
+            })?;
 
         Ok(Self {
             shared,
@@ -505,7 +530,7 @@ impl Drop for MechanicsPool {
             let _ = supervisor.join();
         }
 
-        let mut workers = self.shared.workers.lock().expect("workers mutex poisoned");
+        let mut workers = self.shared.workers_guard();
         for (_, handle) in workers.drain() {
             let _ = handle.join();
         }

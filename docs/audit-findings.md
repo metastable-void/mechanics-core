@@ -39,12 +39,9 @@ This report lists inconsistencies, strange implementations, and redundant/unused
 
 ## Low
 
-7. Panics/unwraps remain in non-test runtime paths.
-- `ContextBuilder::build().unwrap()`: `src/runtime.rs:94`
-- Tokio runtime build unwrap: `src/executor.rs:31-35`
-- Header insertion unwraps: `src/http.rs:60-61`
-- Unsupported job panic: `src/executor.rs:142`
-- Impact: process-level panic risk instead of structured errors.
+7. [DONE] Panics/unwraps remain in non-test runtime paths.
+- Fixed in: `src/runtime.rs` (`ContextBuilder::build` errors are mapped to `MechanicsError::RuntimePool`), `src/executor.rs` (Tokio runtime build returns `Result`; unsupported job types become JS errors), `src/http.rs` (default header values validated without panic paths), `src/pool.rs` (poisoned mutexes are recovered and fallible `thread::Builder::spawn` replaces panic-prone `thread::spawn` in runtime paths).
+- Previous issue: panic-prone convenience methods (`unwrap`, explicit `panic!`, panic-capable header insertion helpers) were used in runtime paths.
 
 8. Worker startup handshake sends rendezvous signal while holding worker map mutex.
 - Location: `src/pool.rs:193-196`

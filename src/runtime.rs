@@ -120,8 +120,10 @@ impl RuntimeInternal {
     }
 
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
-    pub(crate) fn new_with_client(reqwest_client: reqwest::Client) -> Self {
-        let queue = Rc::new(Queue::new());
+    pub(crate) fn new_with_client(reqwest_client: reqwest::Client) -> Result<Self, MechanicsError> {
+        let queue = Rc::new(Queue::new().map_err(|e| {
+            MechanicsError::runtime_pool(format!("failed to initialize async job runtime: {e}"))
+        })?);
         let hooks = Rc::new(RuntimeHostHooks::default());
 
         let loader = Rc::new(CustomModuleLoader::new());
@@ -130,7 +132,11 @@ impl RuntimeInternal {
             .module_loader(loader.clone())
             .host_hooks(hooks.clone())
             .build()
-            .unwrap();
+            .map_err(|e| {
+                MechanicsError::runtime_pool(format!(
+                    "failed to initialize JavaScript context: {e}"
+                ))
+            })?;
 
         let endpoint = FunctionObjectBuilder::new(
             context.realm(),
@@ -193,14 +199,14 @@ impl RuntimeInternal {
 
         loader.define_module(js_string!("mechanics:endpoint"), module);
 
-        Self {
+        Ok(Self {
             ctx: context,
             reqwest_client,
             queue,
             hooks,
             execution_limits: MechanicsExecutionLimits::default(),
             default_endpoint_timeout_ms: None,
-        }
+        })
     }
 
     pub(crate) fn set_execution_limits(&mut self, limits: MechanicsExecutionLimits) {
