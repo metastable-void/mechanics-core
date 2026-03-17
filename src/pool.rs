@@ -623,7 +623,10 @@ impl Drop for MechanicsPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EndpointBodyType, HttpEndpoint, HttpMethod, MechanicsConfig};
+    use crate::{
+        EndpointBodyType, HttpEndpoint, HttpMethod, MechanicsConfig, QuerySpec, SlottedQueryMode,
+        UrlParamSpec,
+    };
     use serde_json::json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1206,6 +1209,112 @@ mod tests {
     }
 
     #[test]
+    fn rand_module_fills_arraybuffer_and_dataview() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import fillRandom from "mechanics:rand";
+            export default function main(_arg) {
+                const ab = new ArrayBuffer(32);
+                const dvBuf = new ArrayBuffer(32);
+                const dv = new DataView(dvBuf);
+                fillRandom(ab);
+                fillRandom(dv);
+                const abArr = Array.from(new Uint8Array(ab));
+                const dvArr = Array.from(new Uint8Array(dvBuf));
+                return {
+                    abNonZero: abArr.some((x) => x !== 0),
+                    dvNonZero: dvArr.some((x) => x !== 0),
+                    abLen: abArr.length,
+                    dvLen: dvArr.length,
+                };
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let value = pool.run(job).expect("run module");
+        assert_eq!(value["abLen"], json!(32));
+        assert_eq!(value["dvLen"], json!(32));
+        assert_eq!(value["abNonZero"], json!(true));
+        assert_eq!(value["dvNonZero"], json!(true));
+    }
+
+    #[test]
+    fn base64_decode_rejects_invalid_input() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { decode } from "mechanics:base64";
+            export default function main(_arg) {
+                return decode("%%%");
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("invalid base64 input should fail decode");
+        match err {
+            MechanicsError::Execution(msg) => assert!(msg.to_ascii_lowercase().contains("invalid")),
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn hex_decode_rejects_invalid_input() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { decode } from "mechanics:hex";
+            export default function main(_arg) {
+                return decode("zz");
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("invalid hex input should fail decode");
+        match err {
+            MechanicsError::Execution(msg) => assert!(msg.to_ascii_lowercase().contains("invalid")),
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn base32_decode_rejects_invalid_input() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import { decode } from "mechanics:base32";
+            export default function main(_arg) {
+                return decode("***", "base32");
+            }
+        "#;
+        let job = make_job(source, MechanicsConfig::new(HashMap::new()), Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("invalid base32 input should fail decode");
+        match err {
+            MechanicsError::Execution(msg) => assert!(msg.to_ascii_lowercase().contains("invalid")),
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
     fn loop_iteration_limit_stops_infinite_loop() {
         let pool = MechanicsPool::new(MechanicsPoolConfig {
             worker_count: 1,
@@ -1390,6 +1499,74 @@ mod tests {
         match err {
             MechanicsError::Execution(msg) => {
                 assert!(msg.contains("request_body_type `bytes`"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_utf8_request_type_rejects_non_string_body() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Post,
+            "https://example.com/anything",
+            HashMap::new(),
+        )
+        .with_request_body_type(EndpointBodyType::Utf8);
+        let config = endpoint_config("ep", endpoint);
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: { x: 1 } });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("utf8 request type should reject non-string body");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("request_body_type `utf8`"));
+            }
+            other => panic!("unexpected error kind: {other}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_json_request_type_rejects_bytes_body() {
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Post,
+            "https://example.com/anything",
+            HashMap::new(),
+        )
+        .with_request_body_type(EndpointBodyType::Json);
+        let config = endpoint_config("ep", endpoint);
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: new Uint8Array([1, 2, 3]) });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let err = pool
+            .run(job)
+            .expect_err("json request type should reject bytes body");
+        match err {
+            MechanicsError::Execution(msg) => {
+                assert!(msg.contains("request_body_type `json`"));
             }
             other => panic!("unexpected error kind: {other}"),
         }
@@ -1971,5 +2148,287 @@ mod tests {
 
         assert_eq!(value["json"]["hello"], json!("headers"));
         assert_eq!(value["headers"]["X-Mechanics-Test"], json!("header-check"));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_get_uses_url_and_query_slots() {
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Get,
+            "https://httpbin.org/anything/{resource}",
+            HashMap::new(),
+        )
+        .with_url_param_specs(HashMap::from([(
+            "resource".to_owned(),
+            UrlParamSpec {
+                default: None,
+                min_bytes: Some(1),
+                max_bytes: Some(64),
+            },
+        )]))
+        .with_query_specs(vec![
+            QuerySpec::Const {
+                key: "v".to_owned(),
+                value: "1".to_owned(),
+            },
+            QuerySpec::Slotted {
+                key: "q".to_owned(),
+                slot: "q".to_owned(),
+                mode: SlottedQueryMode::Required,
+                default: None,
+                min_bytes: Some(1),
+                max_bytes: Some(64),
+            },
+        ]);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("internet", {
+                    urlParams: { resource: "abc_123" },
+                    queries: { q: "slot-ok" }
+                });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let Some(result) = run_internet_job_with_retry(
+            &pool,
+            &job,
+            "internet_endpoint_get_uses_url_and_query_slots",
+        ) else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
+        assert_eq!(value["method"], json!("GET"));
+        assert_eq!(value["args"]["v"], json!("1"));
+        assert_eq!(value["args"]["q"], json!("slot-ok"));
+        let url = value["url"].as_str().unwrap_or_default();
+        assert!(url.contains("/anything/abc_123"));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_put_utf8_request_roundtrip() {
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Put,
+            "https://httpbin.org/anything",
+            HashMap::new(),
+        )
+        .with_request_body_type(EndpointBodyType::Utf8);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("internet", { body: "hello-put" });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let Some(result) = run_internet_job_with_retry(
+            &pool,
+            &job,
+            "internet_endpoint_put_utf8_request_roundtrip",
+        ) else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
+        assert_eq!(value["method"], json!("PUT"));
+        let echoed = value["data"].as_str().unwrap_or_default();
+        assert!(echoed.contains("hello-put"));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_delete_roundtrip() {
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Delete,
+            "https://httpbin.org/delete",
+            HashMap::new(),
+        )
+        .with_query_specs(vec![QuerySpec::Slotted {
+            key: "tag".to_owned(),
+            slot: "tag".to_owned(),
+            mode: SlottedQueryMode::Required,
+            default: None,
+            min_bytes: Some(1),
+            max_bytes: Some(16),
+        }]);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("internet", { queries: { tag: "gone" } });
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_endpoint_delete_roundtrip")
+        else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
+        assert_eq!(value["method"], json!("DELETE"));
+        assert_eq!(value["args"]["tag"], json!("gone"));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_utf8_response_body_mode() {
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Get,
+            "https://httpbin.org/base64/SFRUUEJJTiBpcyBhd2Vzb21l",
+            HashMap::new(),
+        )
+        .with_response_body_type(EndpointBodyType::Utf8);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("internet");
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_endpoint_utf8_response_body_mode")
+        else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
+        let text = value.as_str().unwrap_or_default();
+        assert!(text.contains("HTTPBIN"));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_bytes_response_body_mode() {
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Get,
+            "https://httpbin.org/base64/SFRUUEJJTiBpcyBhd2Vzb21l",
+            HashMap::new(),
+        )
+        .with_response_body_type(EndpointBodyType::Bytes);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                const bytes = await endpoint("internet");
+                return Array.from(bytes);
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_endpoint_bytes_response_body_mode")
+        else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
+        let bytes = value
+            .as_array()
+            .expect("bytes should convert to JSON array");
+        assert!(bytes.len() >= 7);
+        assert_eq!(bytes[0], json!(72));
+        assert_eq!(bytes[1], json!(84));
+        assert_eq!(bytes[2], json!(84));
+        assert_eq!(bytes[3], json!(80));
+        assert_eq!(bytes[4], json!(66));
+        assert_eq!(bytes[5], json!(73));
+        assert_eq!(bytes[6], json!(78));
+    }
+
+    #[test]
+    #[ignore = "requires internet access to https://httpbin.org"]
+    fn internet_endpoint_empty_response_is_null() {
+        let endpoint = HttpEndpoint::new(
+            HttpMethod::Get,
+            "https://httpbin.org/status/204",
+            HashMap::new(),
+        )
+        .with_response_body_type(EndpointBodyType::Json);
+        let config = endpoint_config("internet", endpoint);
+
+        let pool = MechanicsPool::new(MechanicsPoolConfig {
+            worker_count: 1,
+            default_http_timeout_ms: Some(10_000),
+            execution_limits: MechanicsExecutionLimits {
+                max_execution_time: Duration::from_secs(15),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .expect("create pool");
+
+        let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("internet");
+            }
+        "#;
+        let job = make_job(source, config, Value::Null);
+        let Some(result) =
+            run_internet_job_with_retry(&pool, &job, "internet_endpoint_empty_response_is_null")
+        else {
+            return;
+        };
+        let value = result.expect("internet endpoint call should succeed");
+        assert_eq!(value, Value::Null);
     }
 }
