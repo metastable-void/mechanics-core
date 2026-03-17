@@ -11,6 +11,7 @@ use serde_json::Value;
 use tokio::task;
 use std::{borrow::Cow, cell::RefCell, collections::{BTreeMap, HashMap, VecDeque}, fmt::Display, rc::Rc, sync::Arc};
 use std::ops::DerefMut;
+use std::time::Duration;
 
 /// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
 pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) -> std::io::Error {
@@ -64,6 +65,7 @@ pub(crate) struct Queue {
     promise_jobs: RefCell<VecDeque<PromiseJob>>,
     timeout_jobs: RefCell<BTreeMap<JsInstant, TimeoutJob>>,
     generic_jobs: RefCell<VecDeque<GenericJob>>,
+    deadline: RefCell<Option<JsInstant>>,
     tokio_rt: tokio::runtime::Runtime,
     tokio_local: tokio::task::LocalSet,
 }
@@ -83,9 +85,34 @@ impl Queue {
             promise_jobs: RefCell::default(),
             timeout_jobs: RefCell::default(),
             generic_jobs: RefCell::default(),
+            deadline: RefCell::default(),
             tokio_rt,
             tokio_local,
         }
+    }
+
+    fn timeout_error() -> JsError {
+        JsError::from_native(
+            JsNativeError::runtime_limit().with_message("Maximum execution time exceeded"),
+        )
+    }
+
+    pub(crate) fn set_deadline(&self, deadline: Option<JsInstant>) {
+        *self.deadline.borrow_mut() = deadline;
+    }
+
+    fn check_deadline(&self, context: &Context) -> JsResult<()> {
+        let Some(deadline) = *self.deadline.borrow() else {
+            return Ok(());
+        };
+        if context.clock().now() >= deadline {
+            return Err(Self::timeout_error());
+        }
+        Ok(())
+    }
+
+    fn next_timeout_at(&self) -> Option<JsInstant> {
+        self.timeout_jobs.borrow().first_key_value().map(|(k, _)| *k)
     }
 
     /// Executes all due timeout jobs and keeps only future/cancel-surviving entries.
@@ -152,6 +179,11 @@ impl JobExecutor for Queue {
     async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
         let mut group = FutureGroup::new();
         loop {
+            {
+                let ctx_ref = context.borrow();
+                self.check_deadline(&ctx_ref)?;
+            }
+
             for job in std::mem::take(&mut *self.async_jobs.borrow_mut()) {
                 group.insert(job.call(context));
             }
@@ -164,9 +196,61 @@ impl JobExecutor for Queue {
                 return Ok(());
             }
 
-            if let Some(Err(err)) = future::poll_once(group.next()).await.flatten() {
-                eprintln!("Uncaught {err}");
-            };
+            if group.is_empty() {
+                if self.promise_jobs.borrow().is_empty() && self.generic_jobs.borrow().is_empty() {
+                    if let Some(next_timeout_at) = self.next_timeout_at() {
+                        let sleep_dur = {
+                            let ctx_ref = context.borrow();
+                            let now = ctx_ref.clock().now();
+                            if next_timeout_at <= now {
+                                Duration::ZERO
+                            } else {
+                                let mut d: Duration = (next_timeout_at - now).into();
+                                if let Some(deadline) = *self.deadline.borrow() {
+                                    let remaining = if deadline <= now {
+                                        Duration::ZERO
+                                    } else {
+                                        (deadline - now).into()
+                                    };
+                                    d = d.min(remaining);
+                                }
+                                d
+                            }
+                        };
+
+                        if !sleep_dur.is_zero() {
+                            tokio::time::sleep(sleep_dur).await;
+                        }
+                    }
+                }
+            } else {
+                let polled = if let Some(deadline) = *self.deadline.borrow() {
+                    let remaining = {
+                        let ctx_ref = context.borrow();
+                        let now = ctx_ref.clock().now();
+                        if deadline <= now {
+                            return Err(Self::timeout_error());
+                        }
+                        let d: Duration = (deadline - now).into();
+                        d
+                    };
+                    match tokio::time::timeout(remaining, future::poll_once(group.next())).await {
+                        Ok(result) => result,
+                        Err(_) => return Err(Self::timeout_error()),
+                    }
+                } else {
+                    future::poll_once(group.next()).await
+                };
+
+                if let Some(Err(err)) = polled.flatten() {
+                    eprintln!("Uncaught {err}");
+                };
+            }
+
+            {
+                let ctx_ref = context.borrow();
+                self.check_deadline(&ctx_ref)?;
+            }
 
             self.drain_jobs(&mut context.borrow_mut());
             task::yield_now().await
@@ -252,6 +336,25 @@ impl MechanicsState {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MechanicsExecutionLimits {
+    pub max_execution_time: Duration,
+    pub max_loop_iterations: u64,
+    pub max_recursion_depth: usize,
+    pub max_stack_size: usize,
+}
+
+impl Default for MechanicsExecutionLimits {
+    fn default() -> Self {
+        Self {
+            max_execution_time: Duration::from_secs(10),
+            max_loop_iterations: 1_000_000,
+            max_recursion_depth: 512,
+            max_stack_size: 10 * 1024,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MechanicsError {
     Execution(Cow<'static, str>),
@@ -294,16 +397,18 @@ impl std::error::Error for MechanicsError {}
 pub struct RuntimeInternal {
     ctx: Context,
     reqwest_client: reqwest::Client,
+    queue: Rc<Queue>,
+    execution_limits: MechanicsExecutionLimits,
 }
 
 impl RuntimeInternal {
     /// Builds a Boa context, injects runtime state, and exposes `mechanics:endpoint`.
     pub fn new_with_client(reqwest_client: reqwest::Client) -> Self {
-        let queue = Queue::new();
+        let queue = Rc::new(Queue::new());
 
         let loader = Rc::new(CustomModuleLoader::new());
         let mut context = ContextBuilder::new()
-            .job_executor(Rc::new(queue))
+            .job_executor(queue.clone())
             .module_loader(loader.clone())
             .build()
             .unwrap();
@@ -347,7 +452,17 @@ impl RuntimeInternal {
         Self {
             ctx: context,
             reqwest_client,
+            queue,
+            execution_limits: MechanicsExecutionLimits::default(),
         }
+    }
+
+    pub fn set_execution_limits(&mut self, limits: MechanicsExecutionLimits) {
+        self.execution_limits = limits;
+    }
+
+    pub fn execution_limits(&self) -> MechanicsExecutionLimits {
+        self.execution_limits
     }
 
     /// Parses and evaluates a module, invokes its default export, and returns the JS result.
@@ -359,31 +474,42 @@ impl RuntimeInternal {
 
         let source = source.as_ref();
         let mut ctx = &mut self.ctx;
-        
+
+        let runtime_limits = ctx.runtime_limits_mut();
+        runtime_limits.set_loop_iteration_limit(self.execution_limits.max_loop_iterations);
+        runtime_limits.set_recursion_limit(self.execution_limits.max_recursion_depth);
+        runtime_limits.set_stack_size_limit(self.execution_limits.max_stack_size);
+
+        let deadline = ctx.clock().now() + self.execution_limits.max_execution_time.into();
+        self.queue.set_deadline(Some(deadline));
         ctx.insert_data(state);
 
         let source = Source::from_bytes(source);
-        let module = Module::parse(source, None, &mut ctx)?;
-        let _ = module.load_link_evaluate(&mut ctx);
-        ctx.run_jobs()?;
+        let result = (|| -> JsResult<JsValue> {
+            let module = Module::parse(source, None, &mut ctx)?;
+            let _ = module.load_link_evaluate(&mut ctx);
+            ctx.run_jobs()?;
 
-        let arg = JsValue::from_json(&arg, &mut ctx)?;
-        let main = module.get_value(js_string!("default"), &mut ctx)?;
-        let main = main.as_function()
-            .ok_or(JsError::from_native(JsNativeError::reference().with_message("Default export is not a function")))?;
-        let res = main.call(&JsValue::null(), &[arg], &mut ctx)?;
-        let res = res.as_promise()
-            .unwrap_or(JsPromise::resolve(res, &mut ctx));
+            let arg = JsValue::from_json(&arg, &mut ctx)?;
+            let main = module.get_value(js_string!("default"), &mut ctx)?;
+            let main = main.as_function()
+                .ok_or(JsError::from_native(JsNativeError::reference().with_message("Default export is not a function")))?;
+            let res = main.call(&JsValue::null(), &[arg], &mut ctx)?;
+            let res = res.as_promise()
+                .unwrap_or(JsPromise::resolve(res, &mut ctx));
 
-        ctx.run_jobs()?;
+            ctx.run_jobs()?;
+
+            match res.state() {
+                PromiseState::Fulfilled(v) => Ok(v),
+                PromiseState::Pending => Ok(res.into()),
+                PromiseState::Rejected(e) => Err(JsError::from_opaque(e)),
+            }
+        })();
 
         ctx.remove_data::<MechanicsState>();
-
-        match res.state() {
-            PromiseState::Fulfilled(v) => Ok(v),
-            PromiseState::Pending => Ok(res.into()),
-            PromiseState::Rejected(e) => Err(JsError::from_opaque(e)),
-        }
+        self.queue.set_deadline(None);
+        result
     }
 
     /// Runs source and converts the resulting JS value into `serde_json::Value`.
