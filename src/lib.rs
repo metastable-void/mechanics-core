@@ -1632,7 +1632,19 @@ mod tests {
         "#;
         let job = make_job(source, config, json!({"hello":"override"}));
         let value = pool.run(job).expect("endpoint-level timeout should allow success");
-        assert_eq!(value["json"]["hello"], json!("override"));
+        let echoed_json = value
+            .get("json")
+            .and_then(|v| v.get("hello"))
+            .and_then(Value::as_str);
+        let echoed_data = value.get("data").and_then(Value::as_str);
+        let json_ok = echoed_json == Some("override");
+        let data_ok = echoed_data
+            .map(|s| s.contains("\"hello\":\"override\"") || s.contains("\"hello\": \"override\""))
+            .unwrap_or(false);
+        assert!(
+            json_ok || data_ok,
+            "httpbin did not echo request payload in expected fields: {value}"
+        );
     }
 
     #[test]
