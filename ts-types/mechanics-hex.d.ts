@@ -4,6 +4,8 @@
 declare module "mechanics:hex" {
   /**
    * Encodes bytes into lowercase hexadecimal.
+   *
+   * SharedArrayBuffer-backed views are not supported by the runtime.
    */
   export function encode(bufferLike: ArrayBuffer | ArrayBufferView): string;
 

@@ -12,6 +12,7 @@ declare module "mechanics:form-urlencoded" {
   /**
    * Decodes a form-urlencoded string into key/value pairs.
    *
+   * An optional leading `?` is accepted.
    * Duplicate keys use last-value-wins semantics.
    */
   export function decode(params: string): Record<string, string>;

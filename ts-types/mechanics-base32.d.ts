@@ -9,6 +9,7 @@ declare module "mechanics:base32" {
    * Encodes bytes into a base32 string.
    *
    * `bufferLike` accepts `ArrayBuffer` and all typed-array/DataView views.
+   * SharedArrayBuffer-backed views are not supported by the runtime.
    */
   export function encode(
     bufferLike: ArrayBuffer | ArrayBufferView,

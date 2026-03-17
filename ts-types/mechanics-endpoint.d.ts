@@ -27,6 +27,8 @@ declare module "mechanics:endpoint" {
      * - `json`: JSON-compatible values
      * - `utf8`: string
      * - `bytes`: `ArrayBuffer`/typed-array/DataView
+     *
+     * For `GET`/`DELETE` endpoints, body must be omitted or `null`.
      */
     body?: unknown;
   }
@@ -45,6 +47,7 @@ declare module "mechanics:endpoint" {
      * Response headers exposed by endpoint `exposed_response_headers`.
      *
      * Keys are lowercase header names.
+     * Allowlisted headers that are not present in the response are omitted.
      */
     headers: Record<string, string>;
   }
