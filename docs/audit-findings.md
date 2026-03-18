@@ -21,7 +21,29 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- None currently open.
+- 18) Response-size limits are enforced too late for default reqwest transport (memory scaling risk).
+  - Evidence: default transport fully buffers body before returning (`src/http.rs`: `ReqwestEndpointHttpClient::execute`, `res.bytes().await` near line 157).
+  - Evidence: endpoint size limit check happens after transport returns the already-buffered body (`src/http.rs`, near lines 957 and 968).
+  - Impact: large responses can consume unbounded memory up to remote payload size, even when endpoint/pool max-bytes is configured.
+  - Proposed fix: enforce streaming byte caps inside transport read loop (or return streaming body abstraction) so over-limit responses fail before full allocation.
+
+- 19) Endpoint execution does repeated parse/validation/allocation on the per-call hot path.
+  - Evidence: URL template is reparsed each call in `build_url` (`parse_url_template`) (`src/http.rs`, near line 692).
+  - Evidence: allowlisted query slots are rebuilt into a `HashSet` each call (`src/http.rs`, near line 812).
+  - Evidence: response/header allowlists are reparsed repeatedly (`allowlisted_header_names`) in request/response paths (`src/http.rs`, near lines 661 and 1036).
+  - Impact: avoidable CPU + allocation overhead under high QPS and/or many endpoints.
+  - Proposed fix: precompile endpoint config at validation time (parsed template chunks, normalized allowlists/sets) and reuse immutable prepared structures at runtime.
+
+- 20) Worker and supervisor coordination use fixed 100ms polling loops.
+  - Evidence: workers block on `recv_timeout(Duration::from_millis(100))` in main loop (`src/pool.rs`, near line 242).
+  - Evidence: supervisor also polls exit channel every 100ms (`src/pool.rs`, near line 514).
+  - Impact: periodic wakeups add idle overhead across many pools/workers, and introduce up to ~100ms reaction latency for shutdown/reconcile transitions.
+  - Proposed fix: use blocking receives with explicit shutdown signaling (or event-driven wakeups), reserving timed polling only where strictly required.
+
+- 21) Per-worker runtime footprint scales linearly with worker count.
+  - Evidence: each worker runtime creates its own Tokio current-thread runtime + LocalSet (`Queue::new`) (`src/executor.rs`, near lines 30 and 35).
+  - Impact: memory/runtime overhead increases with worker count; large pools may pay substantial duplicated runtime cost.
+  - Proposed fix: benchmark current model vs alternatives (shared runtime scheduler per process or per-pool), then choose based on latency/isolation tradeoffs.
 
 ## Additional audit notes
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
