@@ -141,12 +141,13 @@ impl JobExecutor for Queue {
                     .push(t);
             }
             Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
-            _ => {
+            other => {
                 let realm = context.realm().clone();
+                let message = format!("unsupported job type: {other:?}");
                 let err = GenericJob::new(
-                    |_| {
+                    move |_| {
                         Err(JsError::from_native(
-                            JsNativeError::typ().with_message("unsupported job type"),
+                            JsNativeError::typ().with_message(message.clone()),
                         ))
                     },
                     realm,

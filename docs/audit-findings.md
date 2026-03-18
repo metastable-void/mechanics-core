@@ -167,3 +167,24 @@ This report supersedes the previous content of this file. Prior versions are arc
 
 ## Suggested follow-up order
 1. Remaining medium/high findings focus on broader endpoint protocol/docs and optional integration coverage.
+
+## Additional exploration (2026-03-18)
+
+### Dead code / uncovered path scan
+- `cargo clippy --all-targets --all-features -- -W dead_code` found no dead-code warnings in runtime paths.
+- Remaining low-confidence coverage areas are mostly environmental paths (ignored socket/internet tests) plus hard-to-force disconnect branches.
+- Deterministic queue-pressure tests were added earlier and are now part of default test runs.
+
+### Boa job variants audit
+- Current `boa_engine 0.21.0` `Job` enum contains only:
+- `PromiseJob`, `AsyncJob`, `TimeoutJob`, `GenericJob` (and is `#[non_exhaustive]`).
+- No currently-missing variant implementation was found for this version.
+- Runtime hardening applied:
+- unsupported/future job fallback now returns an error message including the concrete variant debug name (`src/executor.rs`), improving diagnosis if upstream introduces new variants.
+- Proposed next fix:
+- add a focused unit test once Boa exposes a constructible non-standard job variant path (currently not constructible from this crate).
+
+### Panicking external APIs / convenience methods audit
+- `cargo clippy --lib --all-features -- -W clippy::panic -W clippy::unwrap_used -W clippy::expect_used` found no production-library panicking calls.
+- `rg` scan confirmed `expect`/`panic`/`unwrap` uses in `src/` are test-only.
+- No external-crate convenience calls with panic semantics were found in non-test runtime code paths.
