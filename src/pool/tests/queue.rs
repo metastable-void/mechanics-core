@@ -89,7 +89,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
 }
 
 #[test]
-fn run_try_enqueue_reports_queue_full_without_network_dependencies() {
+fn run_nonblocking_enqueue_reports_queue_full_without_network_dependencies() {
     let pool = synthetic_pool(1, MechanicsExecutionLimits::default());
     let (reply_tx, _reply_rx) = bounded(1);
 
@@ -113,7 +113,7 @@ fn run_try_enqueue_reports_queue_full_without_network_dependencies() {
         Value::Null,
     );
     let err = pool
-        .run_try_enqueue(contender)
+        .run_nonblocking_enqueue(contender)
         .expect_err("full queue must reject immediate enqueue");
     assert!(matches!(err, MechanicsError::QueueFull(_)));
 }
@@ -159,7 +159,7 @@ fn run_reports_enqueue_timeout_without_network_dependencies() {
 }
 
 #[test]
-fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnected() {
+fn run_and_run_nonblocking_enqueue_report_worker_unavailable_when_job_queue_is_disconnected() {
     let (tx_disconnected, rx_disconnected) = bounded(1);
     drop(rx_disconnected);
     let (_tx_alive, rx_alive) = bounded(1);
@@ -184,13 +184,13 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnec
     assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 
     let err = pool
-        .run_try_enqueue(job)
+        .run_nonblocking_enqueue(job)
         .expect_err("disconnected queue should surface worker unavailable");
     assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 }
 
 #[test]
-fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_channel() {
+fn run_and_run_nonblocking_enqueue_report_worker_unavailable_when_worker_drops_reply_channel() {
     let (tx, rx) = bounded(8);
     let (exit_tx, exit_rx) = bounded(8);
     let shared = test_shared_with_channels(tx, rx.clone(), exit_tx, exit_rx, 1, 8);
@@ -225,7 +225,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_cha
     assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 
     let err = pool
-        .run_try_enqueue(job)
+        .run_nonblocking_enqueue(job)
         .expect_err("dropped reply channel should surface worker unavailable");
     assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 
@@ -234,7 +234,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_cha
 
 #[test]
 #[ignore = "requires local socket bind permission in the execution environment"]
-fn run_try_enqueue_reports_queue_full() {
+fn run_nonblocking_enqueue_reports_queue_full() {
     let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
     let blocking_endpoint =
         HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new()).with_timeout_ms(Some(3_000));
@@ -280,7 +280,7 @@ fn run_try_enqueue_reports_queue_full() {
                 MechanicsConfig::new(HashMap::new()).expect("create config"),
                 Value::Null,
             );
-            p.run_try_enqueue(over)
+            p.run_nonblocking_enqueue(over)
         }));
     }
     gate.wait();

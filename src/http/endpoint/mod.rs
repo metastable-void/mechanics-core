@@ -144,7 +144,7 @@ pub struct HttpEndpoint {
     response_max_bytes: Option<usize>,
     timeout_ms: Option<u64>,
     #[serde(default)]
-    allow_non_success_status: bool,
+    allow_non_2xx_status: bool,
     // SAFETY: `EndpointRetryPolicy` stores plain Rust data and does not hold GC-managed values.
     #[unsafe_ignore_trace]
     #[serde(default)]
@@ -172,7 +172,7 @@ impl HttpEndpoint {
             response_body_type: EndpointBodyType::Json,
             response_max_bytes: None,
             timeout_ms: None,
-            allow_non_success_status: false,
+            allow_non_2xx_status: false,
             retry_policy: EndpointRetryPolicy::default(),
         }
     }
@@ -242,8 +242,8 @@ impl HttpEndpoint {
     /// Allows non-success (non-2xx) HTTP status responses to proceed.
     ///
     /// Defaults to `false`, which treats non-success statuses as request errors.
-    pub fn with_allow_non_success_status(mut self, allow: bool) -> Self {
-        self.allow_non_success_status = allow;
+    pub fn with_allow_non_2xx_status(mut self, allow: bool) -> Self {
+        self.allow_non_2xx_status = allow;
         self
     }
 

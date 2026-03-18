@@ -72,7 +72,7 @@ export interface HttpEndpointJson {
   response_max_bytes?: number | null;
   /** Must be >= 1 when provided. */
   timeout_ms?: number | null;
-  allow_non_success_status?: boolean;
+  allow_non_2xx_status?: boolean;
   retry_policy?: EndpointRetryPolicyJson;
 }
 
@@ -81,7 +81,7 @@ export interface MechanicsConfigJson {
 }
 
 export interface MechanicsJobJson {
-  mod_source: string;
+  module_source: string;
   arg: unknown;
   config: MechanicsConfigJson;
 }

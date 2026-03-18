@@ -230,7 +230,7 @@ impl MechanicsPoolShared {
                                                 let _ = reply.send(result);
                                             }
                                             Err(_) => {
-                                                let _ = reply.send(Err(MechanicsError::panic(
+                                                let _ = reply.send(Err(MechanicsError::worker_panic(
                                                     "worker panicked while running job",
                                                 )));
                                                 break;
@@ -245,7 +245,7 @@ impl MechanicsPoolShared {
                 }));
 
                 if run.is_err() {
-                    let _ = ready_tx.send(Err(MechanicsError::panic("worker panicked during startup")));
+                    let _ = ready_tx.send(Err(MechanicsError::worker_panic("worker panicked during startup")));
                     let _ = exit_tx.send(WorkerExit::new(worker_id));
                     return;
                 }

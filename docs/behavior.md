@@ -25,10 +25,10 @@ The crate API is exported from `src/lib.rs`:
 1. You build a `MechanicsPool`.
 2. Pool config optionally provides a Rust-side endpoint transport (`endpoint_http_client`) or uses the default reqwest-backed transport.
 3. You submit a `MechanicsJob` containing:
-- module source (`mod_source`),
+- module source (`module_source`),
 - JSON argument (`arg`),
 - endpoint config (`config`).
-4. If a `MechanicsJob` is deserialized from JSON, `mod_source` must be non-empty.
+4. If a `MechanicsJob` is deserialized from JSON, `module_source` must be non-empty.
 5. `MechanicsConfig` validation is fail-fast:
 - `MechanicsConfig::new(...)` validates endpoint configuration before returning.
 - `serde` deserialization into `MechanicsConfig` also validates and fails on invalid endpoint config.
@@ -107,7 +107,7 @@ Resolution behavior:
 - If missing, `User-Agent` is injected automatically.
 - If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
-- `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows non-2xx responses to proceed and be parsed according to `response_body_type` (`json`/`utf8`/`bytes`).
+- `HttpEndpoint::with_allow_non_2xx_status(true)` opt-in allows non-2xx responses to proceed and be parsed according to `response_body_type` (`json`/`utf8`/`bytes`).
 - Retry behavior is driven by endpoint `retry_policy`:
 - retries apply to configured status codes and transport errors up to `max_attempts`,
 - exponential backoff uses `base_backoff_ms` and `max_backoff_ms`,
@@ -234,7 +234,7 @@ Minimal endpoint config example (JSON):
       "overridable_request_headers": ["x-request-id"],
       "exposed_response_headers": ["content-type", "x-trace-id"],
       "timeout_ms": 5000,
-      "allow_non_success_status": false
+      "allow_non_2xx_status": false
     }
   }
 }
@@ -328,7 +328,7 @@ Response-size behavior:
 - `QueueTimeout` means queue admission wait elapsed.
 - `RunTimeout` means the overall API-call deadline elapsed (enqueue+reply path).
 
-### `run_try_enqueue(job)`
+### `run_nonblocking_enqueue(job)`
 - Non-blocking enqueue attempt.
 - If enqueue succeeds, it still waits for execution result (same bounded reply timeout model as `run`).
 - If queue is already full, returns `QueueFull` immediately.
@@ -340,7 +340,7 @@ Response-size behavior:
 
 ### Async runtime interop
 - Rust API is intentionally synchronous (no crate-provided async `run` API) to avoid requiring Tokio or any specific async runtime.
-- `MechanicsPool::new`, `run`, and `run_try_enqueue` may block the calling thread and should not be called directly on an async executor worker thread.
+- `MechanicsPool::new`, `run`, and `run_nonblocking_enqueue` may block the calling thread and should not be called directly on an async executor worker thread.
 - For Tokio integration, call synchronous methods inside `tokio::task::spawn_blocking(...)`.
 - Current implementation does not require caller-owned Tokio runtime state for these sync APIs; using them from `spawn_blocking` is supported.
 - Internally, workers host a Tokio current-thread runtime for Boa async jobs and endpoint transport futures.
@@ -386,8 +386,8 @@ Note:
 Common user-visible trigger categories:
 - `RuntimePool`: invalid pool/config values, startup/runtime initialization failures, or other pool lifecycle setup failures.
 - `Execution`: script/module errors, promise lifecycle errors, JSON conversion failures, and endpoint request/response processing failures.
-- `RunTimeout`: overall `run`/`run_try_enqueue` deadline elapsed.
-- `QueueTimeout` / `QueueFull`: enqueue pressure (`run` wait timed out vs `run_try_enqueue` immediate full queue).
+- `RunTimeout`: overall `run`/`run_nonblocking_enqueue` deadline elapsed.
+- `QueueTimeout` / `QueueFull`: enqueue pressure (`run` wait timed out vs `run_nonblocking_enqueue` immediate full queue).
 - `PoolClosed` / `WorkerUnavailable`: pool closed, queue disconnected, or no workers available under restart guard.
 
 ## Usage example (Rust)

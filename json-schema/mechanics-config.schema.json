@@ -116,7 +116,7 @@
         "response_body_type": { "$ref": "#/$defs/endpointBodyType" },
         "response_max_bytes": { "type": ["integer", "null"], "minimum": 1 },
         "timeout_ms": { "type": ["integer", "null"], "minimum": 1 },
-        "allow_non_success_status": { "type": "boolean" },
+        "allow_non_2xx_status": { "type": "boolean" },
         "retry_policy": { "$ref": "#/$defs/endpointRetryPolicy" }
       }
     }

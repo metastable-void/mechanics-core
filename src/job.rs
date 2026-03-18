@@ -7,11 +7,11 @@ use std::{sync::Arc, time::Duration};
 ///
 /// Jobs are expected to be self-contained for stateless runtime execution.
 /// Do not assume any cross-job cache residency in workers.
-/// When deserialized, `mod_source` must be non-empty.
+/// When deserialized, `module_source` must be non-empty.
 #[derive(Debug, Clone)]
 pub struct MechanicsJob {
     /// ECMAScript module source containing a `default` export callable.
-    pub(crate) mod_source: Arc<str>,
+    pub(crate) module_source: Arc<str>,
     /// JSON argument passed to the script's default export.
     pub(crate) arg: Arc<Value>,
     /// Runtime configuration used for resolving `mechanics:endpoint` calls.
@@ -19,31 +19,33 @@ pub struct MechanicsJob {
 }
 
 impl MechanicsJob {
-    fn validate_mod_source(mod_source: &str) -> Result<(), MechanicsError> {
-        if mod_source.is_empty() {
-            return Err(MechanicsError::runtime_pool("mod_source must not be empty"));
+    fn validate_module_source(module_source: &str) -> Result<(), MechanicsError> {
+        if module_source.is_empty() {
+            return Err(MechanicsError::runtime_pool(
+                "module_source must not be empty",
+            ));
         }
         Ok(())
     }
 
     /// Constructs a mechanics job with validated module source.
     pub fn new(
-        mod_source: impl Into<String>,
+        module_source: impl Into<String>,
         arg: Value,
         config: MechanicsConfig,
     ) -> Result<Self, MechanicsError> {
-        let mod_source = mod_source.into();
-        Self::validate_mod_source(&mod_source)?;
+        let module_source = module_source.into();
+        Self::validate_module_source(&module_source)?;
         Ok(Self {
-            mod_source: Arc::<str>::from(mod_source),
+            module_source: Arc::<str>::from(module_source),
             arg: Arc::new(arg),
             config: Arc::new(config),
         })
     }
 
     /// Returns the ECMAScript module source.
-    pub fn mod_source(&self) -> &str {
-        self.mod_source.as_ref()
+    pub fn module_source(&self) -> &str {
+        self.module_source.as_ref()
     }
 
     /// Returns the JSON argument passed to the module default export.
@@ -57,7 +59,7 @@ impl MechanicsJob {
     }
 
     pub(crate) fn into_parts(self) -> (Arc<str>, Arc<Value>, Arc<MechanicsConfig>) {
-        (self.mod_source, self.arg, self.config)
+        (self.module_source, self.arg, self.config)
     }
 }
 
@@ -67,7 +69,7 @@ impl Serialize for MechanicsJob {
         S: Serializer,
     {
         let mut state = serializer.serialize_struct("MechanicsJob", 3)?;
-        state.serialize_field("mod_source", self.mod_source.as_ref())?;
+        state.serialize_field("module_source", self.module_source.as_ref())?;
         state.serialize_field("arg", self.arg.as_ref())?;
         state.serialize_field("config", self.config.as_ref())?;
         state.end()
@@ -82,13 +84,13 @@ impl<'de> Deserialize<'de> for MechanicsJob {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawMechanicsJob {
-            mod_source: String,
+            module_source: String,
             arg: Value,
             config: MechanicsConfig,
         }
 
         let raw = RawMechanicsJob::deserialize(deserializer)?;
-        MechanicsJob::new(raw.mod_source, raw.arg, raw.config).map_err(serde::de::Error::custom)
+        MechanicsJob::new(raw.module_source, raw.arg, raw.config).map_err(serde::de::Error::custom)
     }
 }
 
@@ -198,27 +200,27 @@ mod tests {
         let encoded = serde_json::to_value(&job).expect("serialize job");
         let decoded: MechanicsJob = serde_json::from_value(encoded).expect("deserialize job");
 
-        assert_eq!(decoded.mod_source(), job.mod_source());
+        assert_eq!(decoded.module_source(), job.module_source());
         assert_eq!(decoded.arg(), job.arg());
         assert_eq!(decoded.config().endpoints.len(), 0);
     }
 
     #[test]
-    fn mechanics_job_deserialize_rejects_empty_mod_source() {
+    fn mechanics_job_deserialize_rejects_empty_module_source() {
         let err = serde_json::from_value::<MechanicsJob>(json!({
-            "mod_source": "",
+            "module_source": "",
             "arg": null,
             "config": { "endpoints": {} }
         }))
         .expect_err("empty module source should be rejected");
 
-        assert!(err.to_string().contains("mod_source must not be empty"));
+        assert!(err.to_string().contains("module_source must not be empty"));
     }
 
     #[test]
     fn mechanics_job_deserialize_rejects_unknown_fields() {
         let err = serde_json::from_value::<MechanicsJob>(json!({
-            "mod_source": "export default function main() { return null; }",
+            "module_source": "export default function main() { return null; }",
             "arg": null,
             "config": { "endpoints": {} },
             "unknown": true

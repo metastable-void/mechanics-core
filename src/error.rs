@@ -41,7 +41,7 @@ pub enum MechanicsError {
     QueueFull(Cow<'static, str>),
     /// Submission failed because enqueue timed out.
     QueueTimeout(Cow<'static, str>),
-    /// Call failed because overall `run`/`run_try_enqueue` wait time elapsed.
+    /// Call failed because overall `run`/`run_nonblocking_enqueue` wait time elapsed.
     RunTimeout(Cow<'static, str>),
     /// Submission failed because the pool is closed.
     PoolClosed(Cow<'static, str>),
@@ -97,7 +97,7 @@ impl MechanicsError {
     }
 
     /// Builds a worker panic error.
-    pub fn panic<M: Into<Cow<'static, str>>>(msg: M) -> Self {
+    pub fn worker_panic<M: Into<Cow<'static, str>>>(msg: M) -> Self {
         Self::Panic(msg.into())
     }
 

@@ -141,7 +141,7 @@ impl HttpEndpoint {
 
         let status_code = res.status;
         let ok = (200..=299).contains(&status_code);
-        if !self.allow_non_success_status && !ok {
+        if !self.allow_non_2xx_status && !ok {
             return Err(Error::other(format!("HTTP status {status_code}")));
         }
 

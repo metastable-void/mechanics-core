@@ -5,9 +5,9 @@
   "description": "Serde-compatible JSON shape for mechanics-core job payloads.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["mod_source", "arg", "config"],
+  "required": ["module_source", "arg", "config"],
   "properties": {
-    "mod_source": {
+    "module_source": {
       "type": "string",
       "minLength": 1
     },

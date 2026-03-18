@@ -129,7 +129,7 @@ fn pool_new_fails_promptly_when_many_workers_fail_startup() {
 }
 
 #[test]
-fn run_and_run_try_enqueue_fail_when_pool_closed() {
+fn run_and_run_nonblocking_enqueue_fail_when_pool_closed() {
     let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
     pool.shared.mark_closed();
 
@@ -144,13 +144,13 @@ fn run_and_run_try_enqueue_fail_when_pool_closed() {
     assert!(matches!(err, MechanicsError::PoolClosed(_)));
 
     let err = pool
-        .run_try_enqueue(job)
-        .expect_err("closed pool must reject run_try_enqueue");
+        .run_nonblocking_enqueue(job)
+        .expect_err("closed pool must reject run_nonblocking_enqueue");
     assert!(matches!(err, MechanicsError::PoolClosed(_)));
 }
 
 #[test]
-fn run_and_run_try_enqueue_fail_when_workers_unavailable_and_restart_blocked() {
+fn run_and_run_nonblocking_enqueue_fail_when_workers_unavailable_and_restart_blocked() {
     let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
     pool.shared.set_restart_blocked(true);
 
@@ -165,7 +165,7 @@ fn run_and_run_try_enqueue_fail_when_workers_unavailable_and_restart_blocked() {
     assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 
     let err = pool
-        .run_try_enqueue(job)
+        .run_nonblocking_enqueue(job)
         .expect_err("must fail when no workers and restart blocked");
     assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
 }

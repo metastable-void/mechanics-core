@@ -275,7 +275,7 @@ impl MechanicsPool {
     /// [`MechanicsPoolConfig::run_timeout`], like [`Self::run`].
     ///
     /// Returns [`MechanicsError::QueueFull`] immediately if the queue is currently full.
-    pub fn run_try_enqueue(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
+    pub fn run_nonblocking_enqueue(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         if self.shared.is_closed() {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
         }

@@ -16,7 +16,7 @@ pub struct MechanicsPoolConfig {
     pub(crate) queue_capacity: usize,
     /// Maximum time to wait while enqueueing in [`MechanicsPool::run`].
     pub(crate) enqueue_timeout: Duration,
-    /// Maximum total wall-clock time that a `run`/`run_try_enqueue` call may block.
+    /// Maximum total wall-clock time that a `run`/`run_nonblocking_enqueue` call may block.
     pub(crate) run_timeout: Duration,
     /// Script execution limits applied to every job.
     pub(crate) execution_limits: MechanicsExecutionLimits,
