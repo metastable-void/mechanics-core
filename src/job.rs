@@ -80,6 +80,7 @@ impl<'de> Deserialize<'de> for MechanicsJob {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RawMechanicsJob {
             mod_source: String,
             arg: Value,
@@ -212,5 +213,18 @@ mod tests {
         .expect_err("empty module source should be rejected");
 
         assert!(err.to_string().contains("mod_source must not be empty"));
+    }
+
+    #[test]
+    fn mechanics_job_deserialize_rejects_unknown_fields() {
+        let err = serde_json::from_value::<MechanicsJob>(json!({
+            "mod_source": "export default function main() { return null; }",
+            "arg": null,
+            "config": { "endpoints": {} },
+            "unknown": true
+        }))
+        .expect_err("unknown fields should be rejected");
+
+        assert!(err.to_string().contains("unknown field"));
     }
 }

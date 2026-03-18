@@ -17,7 +17,7 @@ across jobs.
   `mechanics:endpoint` for preconfigured HTTP calls (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`),
   `mechanics:form-urlencoded`, `mechanics:base64`, `mechanics:hex`, `mechanics:base32`, `mechanics:rand`, and `mechanics:uuid`.
 - Endpoint config supports JSON-deserializable resilience policy (`retry_policy`) for retries/backoff/rate-limit handling.
-- Structured error model (`MechanicsError`, marked `#[non_exhaustive]`).
+- Structured error model (`MechanicsError`, marked `#[non_exhaustive]`) with stable symbolic kind enum (`MechanicsErrorKind`, `#[repr(u8)]`).
 
 Public API re-exports are in `src/lib.rs`.
 
@@ -56,6 +56,7 @@ While using JavaScript, this crate itself is not a Web thing.
 ## API design constraint
 - JSON-first is a core API constraint.
 - `MechanicsJob`, `MechanicsConfig`, `HttpEndpoint`, and related runtime-facing config types are intended to be first-class `serde_json` inputs.
+- Unknown JSON fields are rejected for these runtime-facing payload types.
 - Rust-side builder/constructor helpers should complement JSON ingestion, not replace it.
 - When tightening encapsulation/visibility, preserve non-breaking JSON parseability and keep validation behavior aligned between serde and Rust-native construction paths.
 - This repository is public and is intended for crates.io publication once implementation matures.

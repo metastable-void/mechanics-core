@@ -71,10 +71,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "max_attempts": { "type": "integer", "minimum": 0 },
+        "max_attempts": { "type": "integer", "minimum": 1 },
         "base_backoff_ms": { "type": "integer", "minimum": 0 },
         "max_backoff_ms": { "type": "integer", "minimum": 0 },
-        "max_retry_delay_ms": { "type": "integer", "minimum": 0 },
+        "max_retry_delay_ms": { "type": "integer", "minimum": 1 },
         "rate_limit_backoff_ms": { "type": "integer", "minimum": 0 },
         "retry_on_io_errors": { "type": "boolean" },
         "retry_on_timeout": { "type": "boolean" },
@@ -114,8 +114,8 @@
         },
         "request_body_type": { "$ref": "#/$defs/endpointBodyType" },
         "response_body_type": { "$ref": "#/$defs/endpointBodyType" },
-        "response_max_bytes": { "type": ["integer", "null"], "minimum": 0 },
-        "timeout_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "response_max_bytes": { "type": ["integer", "null"], "minimum": 1 },
+        "timeout_ms": { "type": ["integer", "null"], "minimum": 1 },
         "allow_non_success_status": { "type": "boolean" },
         "retry_policy": { "$ref": "#/$defs/endpointRetryPolicy" }
       }

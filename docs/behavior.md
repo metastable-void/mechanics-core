@@ -19,6 +19,7 @@ The crate API is exported from `src/lib.rs`:
 - `EndpointHttpClient`, `ReqwestEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`
 - `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
 - `MechanicsError`
+- `MechanicsErrorKind` (`#[repr(u8)]` stable symbolic error kind)
 
 ## High-level model
 1. You build a `MechanicsPool`.
@@ -40,6 +41,7 @@ The crate API is exported from `src/lib.rs`:
 JSON-first constraint:
 - Runtime-facing job/config types are designed to be parsed from JSON (`serde`) as a first-class path.
 - Rust constructors/builders are convenience layers and must preserve behavior parity with serde validation semantics.
+- Unknown JSON fields are rejected for runtime-facing job/config/endpoint payloads (`deny_unknown_fields` contract).
 - Canonical JSON shapes are documented in `ts-types/mechanics-json-shapes.d.ts` and `json-schema/*.schema.json`.
 
 ## JavaScript contract
@@ -134,9 +136,11 @@ Config shape is JSON-friendly and snake_case (`serde`):
 - `request_body_type`: `"json" | "utf8" | "bytes"` (method defaults apply).
 - `response_body_type`: `"json" | "utf8" | "bytes"` (default `"json"`).
 - `response_max_bytes`: optional max response-body size in bytes (`null` means use pool default).
+- `response_max_bytes`: when provided as a number, must be `>= 1` (`0` is invalid).
 - `retry_policy`: optional resilience policy (JSON-first/serde-deserializable):
 - `max_attempts` (default `1` means no retries),
 - `base_backoff_ms`, `max_backoff_ms`, `max_retry_delay_ms`,
+- `max_attempts` and `max_retry_delay_ms` must be `>= 1` (`0` is invalid),
 - `rate_limit_backoff_ms`, `retry_on_io_errors`, `retry_on_timeout`, `respect_retry_after`,
 - `retry_on_status` (default `[429, 500, 502, 503, 504]`).
 - `overridable_request_headers`: optional list of request header names that JS may override with `options.headers` (case-insensitive).
@@ -298,11 +302,13 @@ Notes:
 Timeout behavior:
 - Endpoint timeout = `HttpEndpoint::with_timeout_ms(...)` if set,
 - else pool default `MechanicsPoolConfig.default_http_timeout_ms`.
+- Any explicit timeout value of `0` is invalid (`>= 1` required).
 
 Response-size behavior:
 - Endpoint response max bytes = `HttpEndpoint::with_response_max_bytes(...)` if set,
 - else pool default `MechanicsPoolConfig.default_http_response_max_bytes` (default: `8 MiB`),
 - exceeding the effective limit fails the endpoint call with an execution error.
+- Any explicit response max bytes value of `0` is invalid (`>= 1` required).
 
 ## Pool and queue behavior
 `MechanicsPool::new(config)` creates:

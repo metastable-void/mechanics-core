@@ -73,6 +73,30 @@ fn pool_new_rejects_invalid_config() {
     };
     assert!(matches!(err, MechanicsError::RuntimePool(_)));
     assert!(err.msg().contains("too large"));
+
+    let err = match MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        queue_capacity: 1,
+        default_http_timeout_ms: Some(0),
+        ..Default::default()
+    }) {
+        Err(err) => err,
+        Ok(_) => panic!("default_http_timeout_ms=0 must fail"),
+    };
+    assert!(matches!(err, MechanicsError::RuntimePool(_)));
+    assert!(err.msg().contains("default_http_timeout_ms"));
+
+    let err = match MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        queue_capacity: 1,
+        default_http_response_max_bytes: Some(0),
+        ..Default::default()
+    }) {
+        Err(err) => err,
+        Ok(_) => panic!("default_http_response_max_bytes=0 must fail"),
+    };
+    assert!(matches!(err, MechanicsError::RuntimePool(_)));
+    assert!(err.msg().contains("default_http_response_max_bytes"));
 }
 
 #[test]

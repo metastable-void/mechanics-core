@@ -59,6 +59,17 @@ fn mechanics_config_deserialize_rejects_invalid_endpoint_configuration() {
 }
 
 #[test]
+fn mechanics_config_deserialize_rejects_unknown_top_level_field() {
+    let err = serde_json::from_value::<MechanicsConfig>(json!({
+        "endpoints": {},
+        "unknown": true
+    }))
+    .expect_err("unknown top-level fields must be rejected");
+
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
 fn mechanics_config_rejects_invalid_header_allowlist_name() {
     let endpoint: HttpEndpoint = serde_json::from_value(json!({
         "method": "post",
@@ -72,6 +83,51 @@ fn mechanics_config_rejects_invalid_header_allowlist_name() {
     endpoints.insert("bad".to_owned(), endpoint);
     let err = MechanicsConfig::new(endpoints).expect_err("config should fail fast");
     assert!(err.msg().contains("invalid header name `bad header`"));
+}
+
+#[test]
+fn mechanics_config_rejects_unknown_endpoint_field() {
+    let err = serde_json::from_value::<MechanicsConfig>(json!({
+        "endpoints": {
+            "bad": {
+                "method": "get",
+                "url_template": "https://example.com/{id}",
+                "url_param_specs": { "id": {} },
+                "unknown_field": 123
+            }
+        }
+    }))
+    .expect_err("unknown endpoint fields must be rejected");
+
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn mechanics_config_rejects_zero_timeout_and_response_max_bytes() {
+    for endpoint in [
+        json!({
+            "method": "get",
+            "url_template": "https://example.com/{id}",
+            "url_param_specs": { "id": {} },
+            "timeout_ms": 0
+        }),
+        json!({
+            "method": "get",
+            "url_template": "https://example.com/{id}",
+            "url_param_specs": { "id": {} },
+            "response_max_bytes": 0
+        }),
+    ] {
+        let err = serde_json::from_value::<MechanicsConfig>(json!({
+            "endpoints": { "bad": endpoint }
+        }))
+        .expect_err("zero values must be rejected");
+
+        assert!(
+            err.to_string().contains("must be >= 1"),
+            "unexpected error: {err}"
+        );
+    }
 }
 
 #[test]

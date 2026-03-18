@@ -50,6 +50,49 @@ fn endpoint_rejects_invalid_retry_policy() {
 }
 
 #[test]
+fn endpoint_rejects_unknown_retry_policy_fields() {
+    let err = serde_json::from_value::<MechanicsConfig>(json!({
+        "endpoints": {
+            "bad": {
+                "method": "get",
+                "url_template": "https://example.com/{id}",
+                "url_param_specs": { "id": {} },
+                "retry_policy": {
+                    "max_attempts": 2,
+                    "unknown": true
+                }
+            }
+        }
+    }))
+    .expect_err("unknown retry_policy fields should fail config parsing");
+
+    assert!(err.to_string().contains("unknown field"));
+}
+
+#[test]
+fn endpoint_rejects_zero_max_retry_delay() {
+    let err = serde_json::from_value::<MechanicsConfig>(json!({
+        "endpoints": {
+            "bad": {
+                "method": "get",
+                "url_template": "https://example.com/{id}",
+                "url_param_specs": { "id": {} },
+                "retry_policy": {
+                    "max_attempts": 2,
+                    "max_retry_delay_ms": 0
+                }
+            }
+        }
+    }))
+    .expect_err("zero max_retry_delay_ms should fail config parsing");
+
+    assert!(
+        err.to_string()
+            .contains("retry_policy.max_retry_delay_ms must be > 0")
+    );
+}
+
+#[test]
 fn retry_policy_uses_retry_after_for_rate_limit() {
     let policy = EndpointRetryPolicy {
         max_attempts: 3,

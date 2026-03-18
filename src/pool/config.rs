@@ -92,6 +92,16 @@ impl MechanicsPoolConfig {
                 "run_timeout is too large for the current platform clock",
             ));
         }
+        if self.default_http_timeout_ms == Some(0) {
+            return Err(MechanicsError::runtime_pool(
+                "default_http_timeout_ms must be >= 1 when provided",
+            ));
+        }
+        if self.default_http_response_max_bytes == Some(0) {
+            return Err(MechanicsError::runtime_pool(
+                "default_http_response_max_bytes must be >= 1 when provided",
+            ));
+        }
         self.execution_limits.validate()?;
         Ok(())
     }

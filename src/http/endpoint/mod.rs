@@ -43,6 +43,7 @@ pub enum EndpointBodyType {
 
 /// Validation and default policy for one URL template slot.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
 pub struct UrlParamSpec {
     /// Optional fallback value used when the JS-provided value is missing or empty.
     #[serde(default)]
@@ -86,7 +87,7 @@ pub enum SlottedQueryMode {
 
 /// One query emission rule.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuerySpec {
     /// Emits a constant key/value pair.
     Const {
@@ -121,6 +122,7 @@ pub enum QuerySpec {
 /// Endpoint definitions are pure configuration inputs and should be treated as stateless.
 /// Any caching behavior should be implemented outside this crate.
 #[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct HttpEndpoint {
     method: HttpMethod,
     url_template: String,

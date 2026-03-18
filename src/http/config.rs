@@ -83,6 +83,7 @@ impl<'de> Deserialize<'de> for MechanicsConfig {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RawMechanicsConfig {
             endpoints: HashMap<String, HttpEndpoint>,
         }

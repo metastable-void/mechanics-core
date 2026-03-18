@@ -18,7 +18,7 @@ mod job;
 mod pool;
 mod runtime;
 
-pub use error::MechanicsError;
+pub use error::{MechanicsError, MechanicsErrorKind};
 pub use http::{
     EndpointBodyType, EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest,
     EndpointHttpRequestBody, EndpointHttpResponse, EndpointRetryPolicy, HttpEndpoint, HttpMethod,

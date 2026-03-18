@@ -13,6 +13,18 @@ use std::{
 impl HttpEndpoint {
     pub(crate) fn validate_config(&self) -> std::io::Result<()> {
         self.retry_policy.validate()?;
+        if self.timeout_ms == Some(0) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "timeout_ms must be >= 1 when provided",
+            ));
+        }
+        if self.response_max_bytes == Some(0) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "response_max_bytes must be >= 1 when provided",
+            ));
+        }
         validate_header_name_list(
             &self.overridable_request_headers,
             "overridable_request_headers",

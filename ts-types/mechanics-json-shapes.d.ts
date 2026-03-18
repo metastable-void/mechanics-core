@@ -45,9 +45,11 @@ export type QuerySpecJson =
     };
 
 export interface EndpointRetryPolicyJson {
+  /** Must be >= 1 when provided. */
   max_attempts?: number;
   base_backoff_ms?: number;
   max_backoff_ms?: number;
+  /** Must be >= 1 when provided. */
   max_retry_delay_ms?: number;
   rate_limit_backoff_ms?: number;
   retry_on_io_errors?: boolean;
@@ -66,7 +68,9 @@ export interface HttpEndpointJson {
   exposed_response_headers?: string[];
   request_body_type?: EndpointBodyType;
   response_body_type?: EndpointBodyType;
+  /** Must be >= 1 when provided. */
   response_max_bytes?: number | null;
+  /** Must be >= 1 when provided. */
   timeout_ms?: number | null;
   allow_non_success_status?: boolean;
   retry_policy?: EndpointRetryPolicyJson;

@@ -8,6 +8,7 @@ use std::{
 /// Endpoint-level resilience policy for retries, backoff, and rate-limit handling.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct EndpointRetryPolicy {
     /// Maximum total attempts (initial request + retries).
     pub max_attempts: usize,

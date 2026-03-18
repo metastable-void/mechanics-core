@@ -1,5 +1,36 @@
 use std::{borrow::Cow, fmt::Display};
 
+/// Stable symbolic kind code for [`MechanicsError`].
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MechanicsErrorKind {
+    Execution = 1,
+    QueueFull = 2,
+    QueueTimeout = 3,
+    RunTimeout = 4,
+    PoolClosed = 5,
+    WorkerUnavailable = 6,
+    Canceled = 7,
+    Panic = 8,
+    RuntimePool = 9,
+}
+
+impl MechanicsErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Execution => "MechanicsError::Execution",
+            Self::QueueFull => "MechanicsError::QueueFull",
+            Self::QueueTimeout => "MechanicsError::QueueTimeout",
+            Self::RunTimeout => "MechanicsError::RunTimeout",
+            Self::PoolClosed => "MechanicsError::PoolClosed",
+            Self::WorkerUnavailable => "MechanicsError::WorkerUnavailable",
+            Self::Canceled => "MechanicsError::Canceled",
+            Self::Panic => "MechanicsError::Panic",
+            Self::RuntimePool => "MechanicsError::RuntimePool",
+        }
+    }
+}
+
 /// Error type used across script execution and pool operations.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -85,25 +116,25 @@ impl MechanicsError {
         }
     }
 
-    /// Returns the symbolic error kind name.
-    pub fn kind(&self) -> &'static str {
+    /// Returns the stable symbolic error kind.
+    pub fn kind(&self) -> MechanicsErrorKind {
         match &self {
-            Self::Execution(_) => "MechanicsError::Execution",
-            Self::QueueFull(_) => "MechanicsError::QueueFull",
-            Self::QueueTimeout(_) => "MechanicsError::QueueTimeout",
-            Self::RunTimeout(_) => "MechanicsError::RunTimeout",
-            Self::PoolClosed(_) => "MechanicsError::PoolClosed",
-            Self::WorkerUnavailable(_) => "MechanicsError::WorkerUnavailable",
-            Self::Canceled(_) => "MechanicsError::Canceled",
-            Self::Panic(_) => "MechanicsError::Panic",
-            Self::RuntimePool(_) => "MechanicsError::RuntimePool",
+            Self::Execution(_) => MechanicsErrorKind::Execution,
+            Self::QueueFull(_) => MechanicsErrorKind::QueueFull,
+            Self::QueueTimeout(_) => MechanicsErrorKind::QueueTimeout,
+            Self::RunTimeout(_) => MechanicsErrorKind::RunTimeout,
+            Self::PoolClosed(_) => MechanicsErrorKind::PoolClosed,
+            Self::WorkerUnavailable(_) => MechanicsErrorKind::WorkerUnavailable,
+            Self::Canceled(_) => MechanicsErrorKind::Canceled,
+            Self::Panic(_) => MechanicsErrorKind::Panic,
+            Self::RuntimePool(_) => MechanicsErrorKind::RuntimePool,
         }
     }
 }
 
 impl Display for MechanicsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.kind(), self.msg())
+        write!(f, "{}: {}", self.kind().as_str(), self.msg())
     }
 }
 
