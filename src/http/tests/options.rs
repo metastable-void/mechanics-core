@@ -1,5 +1,5 @@
 use super::super::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn parse_endpoint_call_options_requires_object_or_nullish() {
@@ -19,6 +19,19 @@ fn parse_endpoint_call_options_requires_object_or_nullish() {
     assert_eq!(parsed.headers.get("x-test"), Some(&"v1".to_owned()));
     match parsed.body {
         EndpointCallBody::Json(v) => assert_eq!(v, json!({"ok": true})),
+        other => panic!("unexpected body variant: {other:?}"),
+    }
+}
+
+#[test]
+fn parse_endpoint_call_options_treats_explicit_null_body_as_json_null() {
+    let parsed = parse_endpoint_call_options(Some(json!({
+        "body": null
+    })))
+    .expect("object with null body should parse");
+
+    match parsed.body {
+        EndpointCallBody::Json(v) => assert_eq!(v, Value::Null),
         other => panic!("unexpected body variant: {other:?}"),
     }
 }

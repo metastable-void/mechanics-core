@@ -87,7 +87,7 @@ Resolution behavior:
 - If missing, `User-Agent` is injected automatically.
 - If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
-- `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows JSON parsing on non-2xx statuses.
+- `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows non-2xx responses to proceed and be parsed according to `response_body_type` (`json`/`utf8`/`bytes`).
 
 `endpoint(name, options)` payload shape (camelCase):
 - `urlParams`: object of string slot values for URL template substitution.
@@ -98,7 +98,10 @@ Resolution behavior:
 - `json`: any JSON-convertible JS value.
 - `utf8`: `string`.
 - `bytes`: `TypedArray | ArrayBuffer | DataView` (treated as bytes).
-- for `GET`/`DELETE`, `body` must be omitted or `null`.
+- `body` omission semantics:
+- omitted or `undefined` means "no request body".
+- explicit `null` is treated as JSON `null` (not omission) and is sent for JSON request mode.
+- for `GET`/`DELETE`, any provided `body` value (including explicit `null`) is rejected.
 - `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 Config shape is JSON-friendly and snake_case (`serde`):
@@ -118,6 +121,12 @@ Config shape is JSON-friendly and snake_case (`serde`):
 - `required_allow_empty`: query value must resolve and may be empty.
 - `optional`: missing/empty is treated as omitted.
 - `optional_allow_empty`: missing is omitted; if provided, empty is emitted.
+- slotted query resolution precedence:
+- use provided `queries[slot]` when present,
+- otherwise use `default` when configured,
+- then apply mode omission/error behavior.
+- for `required` and `optional`, empty `default` is treated as absent.
+- for `required_allow_empty` and `optional_allow_empty`, empty `default` remains a concrete value.
 - URL param default behavior:
 - if `default` exists, missing/empty JS value uses `default`.
 - if `default` is absent, missing/empty JS value resolves as empty.
@@ -266,8 +275,8 @@ Response-size behavior:
 Dropping `MechanicsPool`:
 - marks pool closed,
 - cancels queued jobs best-effort,
-- reaps already-finished worker handles before shutdown signaling,
-- sends shutdown messages to workers,
+- reaps already-finished worker handles,
+- workers observe closed state and exit when idle (bounded by worker receive poll interval),
 - joins supervisor and worker threads.
 
 ## Runtime limits

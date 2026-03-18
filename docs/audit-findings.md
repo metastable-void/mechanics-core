@@ -9,7 +9,7 @@ This report supersedes the previous content of this file. Prior versions are arc
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`61 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`64 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - Result: fail on style-only `clippy::derivable_impls` in `src/http.rs` (`EndpointBodyType`, `SlottedQueryMode`).
 
@@ -51,47 +51,60 @@ This report supersedes the previous content of this file. Prior versions are arc
 ### 3) `MechanicsPool::drop` can block for a long or unbounded duration
 - Severity: medium
 - Category: lifecycle/runtime behavior
+- Status: done (2026-03-18)
 - Evidence:
 - `Drop` sends one `Shutdown` message per live worker using blocking `send` on bounded queue (`src/pool.rs:625` to `src/pool.rs:627`).
 - Workers only receive shutdown when they return to queue receive loop; busy workers delay consumption.
 - Impact:
 - Drop/join latency can become very long under stuck/long-running workers.
-- Recommendation:
-- Use non-blocking/timed shutdown signaling strategy, or document/drop with explicit bounded shutdown behavior.
+- Resolution:
+- Removed blocking shutdown-message sends from `Drop`.
+- Worker loop now uses bounded `recv_timeout` polling and exits on observed pool-closed state.
+- Verification:
+- Added regression test: `src/pool/tests/lifecycle.rs` (`drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving`).
 
 ### 4) Protocol contradiction: explicit `body: null` is treated as absent, not JSON null
 - Severity: medium
 - Category: protocol contract mismatch
+- Status: done (2026-03-18)
 - Evidence:
 - Parsing maps `body: null` to `EndpointCallBody::Absent` (`src/http.rs:1011`).
 - Execution omits body when `Absent` (`src/http.rs:608`).
 - Docs currently state JSON mode accepts “any JSON-convertible JS value” (`docs/behavior.md:97` to `docs/behavior.md:100`), which implies `null` should be sendable.
 - Impact:
 - Callers cannot send explicit JSON `null` payloads on `POST`/`PUT`.
-- Recommendation:
-- Either implement explicit JSON-null sending semantics, or document that `null` means omission.
+- Resolution:
+- Changed endpoint option parsing semantics:
+- omitted/`undefined` => `EndpointCallBody::Absent`,
+- explicit `null` => `EndpointCallBody::Json(Value::Null)`.
+- Updated docs and TS declaration comments to describe the explicit null behavior and omission semantics.
+- Verification:
+- Added parser-level test: `src/http/tests/options.rs` (`parse_endpoint_call_options_treats_explicit_null_body_as_json_null`).
+- Added runtime contract test: `src/pool/tests/endpoint_validation.rs` (`endpoint_get_rejects_explicit_null_body`).
 
 ### 5) Docs mismatch: non-2xx opt-in behavior is broader than documented
 - Severity: medium
 - Category: documentation contradiction
+- Status: done (2026-03-18)
 - Evidence:
 - Docs say `with_allow_non_success_status(true)` “allows JSON parsing on non-2xx” (`docs/behavior.md:90`).
 - Implementation allows normal downstream parsing according to `response_body_type` (`json`/`utf8`/`bytes`) (`src/http.rs:651`, `src/http.rs:682` to `src/http.rs:694`).
 - Impact:
 - Contract text is narrower than actual behavior.
-- Recommendation:
-- Update docs to describe response-body-type-driven parsing on non-2xx.
+- Resolution:
+- Updated `docs/behavior.md` to describe non-2xx opt-in behavior as response-body-type-driven parsing, matching implementation.
 
 ### 6) Docs are incomplete for optional query modes when `default` is set
 - Severity: medium
 - Category: undocumented non-obvious behavior
+- Status: done (2026-03-18)
 - Evidence:
 - Docs describe optional modes primarily as omission semantics (`docs/behavior.md:119` to `docs/behavior.md:120`).
 - Runtime resolves missing values through `default` first (`src/http.rs:884` to `src/http.rs:891`).
 - Impact:
 - Users may assume missing optional values are always omitted, which is false when default exists.
-- Recommendation:
-- Document precedence explicitly: provided value -> default (if any) -> mode omission/error rule.
+- Resolution:
+- Updated `docs/behavior.md` with explicit slotted query resolution precedence and empty-default behavior by mode.
 
 ### 7) Fail-fast constructor docs do not mention call-time `run_timeout` overflow failure
 - Severity: low
@@ -142,6 +155,5 @@ This report supersedes the previous content of this file. Prior versions are arc
 - Panic usage observed is test-only.
 
 ## Suggested follow-up order
-1. Resolve protocol/doc contradictions (#4, #5, #6).
-2. Harden lifecycle/docs/testing gaps (#3, #7, #9).
-3. Add explicit GC safety invariants (#8).
+1. Harden lifecycle/docs/testing gaps (#7, #9).
+2. Add explicit GC safety invariants (#8).

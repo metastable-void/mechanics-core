@@ -198,6 +198,68 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
 }
 
 #[test]
+fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
+    let (tx, rx) = bounded(1);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = Arc::new(MechanicsPoolShared {
+        tx,
+        rx,
+        exit_tx,
+        exit_rx,
+        workers: RwLock::new(HashMap::new()),
+        next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 1,
+        closed: AtomicBool::new(false),
+        restart_blocked: AtomicBool::new(false),
+        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+        execution_limits: MechanicsExecutionLimits::default(),
+        default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
+        reqwest_client: reqwest::Client::new(),
+        #[cfg(test)]
+        force_worker_runtime_init_failure: false,
+    });
+
+    let blocker = thread::spawn(|| thread::sleep(Duration::from_millis(200)));
+    {
+        let mut workers = shared.workers.write();
+        workers.insert(0, blocker);
+    }
+
+    let (reply_tx, _reply_rx) = bounded(1);
+    let queued_job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    shared
+        .tx
+        .send(PoolMessage::Run(PoolJob {
+            job: queued_job,
+            reply: reply_tx,
+            canceled: Arc::new(AtomicBool::new(false)),
+        }))
+        .expect("fill queue");
+
+    let pool = MechanicsPool {
+        shared,
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(50),
+        supervisor: None,
+    };
+
+    let (done_tx, done_rx) = bounded::<()>(1);
+    thread::spawn(move || {
+        drop(pool);
+        let _ = done_tx.send(());
+    });
+
+    done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("drop should not block on a full queue");
+}
+
+#[test]
 fn restart_guard_blocks_after_limit() {
     let mut guard = RestartGuard::new(Duration::from_secs(1), 2);
     let t0 = Instant::now();
@@ -244,7 +306,7 @@ fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
     assert_eq!(shared.live_workers(), 1);
     assert!(!shared.restart_blocked.load(Ordering::Acquire));
 
-    let _ = shared.tx.send(PoolMessage::Shutdown);
+    shared.closed.store(true, Ordering::Release);
     let mut workers = shared.workers.write();
     for (_, handle) in workers.drain() {
         let _ = handle.join();

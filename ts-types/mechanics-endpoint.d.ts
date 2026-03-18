@@ -28,7 +28,11 @@ declare module "mechanics:endpoint" {
      * - `utf8`: string
      * - `bytes`: `ArrayBuffer`/typed-array/DataView
      *
-     * For `GET`/`DELETE` endpoints, body must be omitted or `null`.
+     * Omission semantics:
+     * - omitted/`undefined`: no request body
+     * - explicit `null`: JSON null body (for `json` request mode)
+     *
+     * For `GET`/`DELETE` endpoints, any provided body value (including `null`) is rejected.
      */
     body?: unknown;
   }

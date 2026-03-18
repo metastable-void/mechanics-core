@@ -98,6 +98,39 @@ fn endpoint_get_rejects_non_null_body() {
 }
 
 #[test]
+fn endpoint_get_rejects_explicit_null_body() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let endpoint = HttpEndpoint::new(
+        HttpMethod::Get,
+        "https://example.com/anything",
+        HashMap::new(),
+    );
+    let config = endpoint_config("ep", endpoint);
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: null });
+            }
+        "#;
+    let job = make_job(source, config, Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("GET endpoint should reject explicit null body");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("does not accept a request body"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[test]
 fn endpoint_bytes_request_type_rejects_non_buffer_body() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,

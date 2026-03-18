@@ -1008,7 +1008,8 @@ pub(crate) fn parse_endpoint_call_options(
         None | Some(Value::Null) => Ok(EndpointCallOptions::default()),
         Some(Value::Object(mut map)) => {
             let body = match map.remove("body") {
-                None | Some(Value::Null) => EndpointCallBody::Absent,
+                None => EndpointCallBody::Absent,
+                Some(Value::Null) => EndpointCallBody::Json(Value::Null),
                 Some(Value::String(s)) => EndpointCallBody::Utf8(s),
                 Some(other) => EndpointCallBody::Json(other),
             };

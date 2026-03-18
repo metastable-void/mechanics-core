@@ -118,7 +118,6 @@ struct PoolJob {
 #[derive(Debug)]
 enum PoolMessage {
     Run(PoolJob),
-    Shutdown,
 }
 
 #[derive(Debug)]
@@ -195,6 +194,7 @@ impl MechanicsPoolShared {
 
         let rx = shared.rx.clone();
         let exit_tx = shared.exit_tx.clone();
+        let shared_for_worker = Arc::clone(shared);
         let (ready_tx, ready_rx) = bounded::<Result<(), MechanicsError>>(1);
         let reqwest_client = shared.reqwest_client.clone();
         let execution_limits = shared.execution_limits;
@@ -231,7 +231,7 @@ impl MechanicsPoolShared {
                         .set_default_endpoint_response_max_bytes(default_http_response_max_bytes);
 
                     loop {
-                        match rx.recv() {
+                        match rx.recv_timeout(Duration::from_millis(100)) {
                             Ok(PoolMessage::Run(pool_job)) => {
                                 if pool_job.canceled.load(Ordering::Acquire) {
                                     let _ = pool_job.reply.send(Err(MechanicsError::canceled(
@@ -255,8 +255,12 @@ impl MechanicsPoolShared {
                                     }
                                 }
                             }
-                            Ok(PoolMessage::Shutdown) => break,
-                            Err(_) => break,
+                            Err(RecvTimeoutError::Timeout) => {
+                                if shared_for_worker.closed.load(Ordering::Acquire) {
+                                    break;
+                                }
+                            }
+                            Err(RecvTimeoutError::Disconnected) => break,
                         }
                     }
                 }));
@@ -525,11 +529,6 @@ impl MechanicsPool {
                     "job queue disconnected from workers",
                 ));
             }
-            Err(SendTimeoutError::Timeout(PoolMessage::Shutdown)) => {
-                return Err(MechanicsError::runtime_pool(
-                    "unexpected shutdown message timeout",
-                ));
-            }
         }
 
         let Some(remaining_for_reply) = Self::remaining_to_deadline(deadline) else {
@@ -587,11 +586,6 @@ impl MechanicsPool {
                     "job queue disconnected from workers",
                 ));
             }
-            Err(TrySendError::Full(PoolMessage::Shutdown)) => {
-                return Err(MechanicsError::runtime_pool(
-                    "unexpected shutdown queue state",
-                ));
-            }
         }
 
         let Some(remaining_for_reply) = Self::remaining_to_deadline(deadline) else {
@@ -626,16 +620,9 @@ impl Drop for MechanicsPool {
                         "pool dropped before job execution",
                     )));
                 }
-                Ok(PoolMessage::Shutdown) => {}
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
-        }
-
-        // Reap stale finished handles before deciding shutdown signal count.
-        let worker_count = self.shared.live_workers();
-        for _ in 0..worker_count {
-            let _ = self.shared.tx.send(PoolMessage::Shutdown);
         }
 
         if let Some(supervisor) = self.supervisor.take() {

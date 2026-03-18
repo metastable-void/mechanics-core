@@ -87,8 +87,10 @@ fn parse_endpoint_call_options_js(
     let queries = parse_string_map_field(&options, js_string!("queries"), "queries", context)?;
     let headers = parse_string_map_field(&options, js_string!("headers"), "headers", context)?;
     let body_value = options.get(js_string!("body"), context)?;
-    let body = if body_value.is_undefined() || body_value.is_null() {
+    let body = if body_value.is_undefined() {
         EndpointCallBody::Absent
+    } else if body_value.is_null() {
+        EndpointCallBody::Json(Value::Null)
     } else if let Some(string) = body_value.as_string() {
         EndpointCallBody::Utf8(string.to_std_string_lossy())
     } else if let Some(bytes) = buffer_like::try_extract_buffer_like_bytes(&body_value, context)? {
