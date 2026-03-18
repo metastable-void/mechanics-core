@@ -21,7 +21,70 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- None currently open.
+- 22) Public transport abstraction leaks `reqwest` internals across crate API surface
+  - Severity: medium
+  - Type: encapsulation / overly exposed API
+  - Evidence:
+  - `EndpointHttpRequest` uses `reqwest::Url` and `reqwest::header::HeaderMap` as public fields in `src/http/transport.rs`.
+  - `EndpointHttpResponse` exposes `reqwest::header::HeaderMap` publicly in `src/http/transport.rs`.
+  - Risk:
+  - External implementations of `EndpointHttpClient` must depend on `reqwest` types even when not using reqwest transport logic.
+  - This makes the transport abstraction less transport-agnostic and hardens coupling to one HTTP stack.
+  - Proposed direction:
+  - Introduce crate-owned transport-neutral request/response types (method, URL as string/newtype, plain header map, bytes body).
+  - Keep reqwest mapping isolated inside `ReqwestEndpointHttpClient`.
+  - Add compatibility shims/deprecations to avoid breaking downstream users abruptly.
+
+- 23) Public mutable fields on core config/job types allow invariant bypass at construction time
+  - Severity: medium
+  - Type: encapsulation / visibility
+  - Evidence:
+  - `MechanicsJob` fields are `pub` (`mod_source`, `arg`, `config`) in `src/job.rs`.
+  - `MechanicsExecutionLimits` fields are all `pub` in `src/job.rs`.
+  - `MechanicsPoolConfig` fields are largely `pub` in `src/pool/config.rs`.
+  - Risk:
+  - Callers can construct values that bypass intended preconditions (for example, empty `mod_source`, unreasonable execution limits) until later runtime validation paths.
+  - Invariants are split across deserialization, pool construction, and runtime behavior instead of being enforced at type boundaries.
+  - Proposed direction:
+  - Add validated constructors/builders for public-facing config/job types and migrate docs/examples toward them.
+  - Keep direct field access temporarily (for compatibility), but mark as soft-deprecated and tighten over a staged release.
+
+- 24) Internal pool state structs expose wide `pub(crate)` field surfaces, increasing cross-module coupling
+  - Severity: low
+  - Type: encapsulation / maintainability
+  - Evidence:
+  - `MechanicsPoolShared` has many `pub(crate)` fields in `src/pool/shared.rs`.
+  - `RestartGuard` exposes internal state (`window`, `max_restarts`, `restarts`) as `pub(crate)` in `src/pool/restart_guard.rs`.
+  - `WorkerHandle`, `PoolJob`, and `WorkerExit` also expose internals via `pub(crate)` fields in `src/pool/worker.rs`.
+  - Risk:
+  - Invariant ownership is diffuse and easier to accidentally violate during future changes.
+  - Refactors become riskier because multiple modules can mutate internal state directly.
+  - Proposed direction:
+  - Reduce field visibility to private and add narrow accessor/mutator methods for required interactions.
+  - Keep read-only stats access via dedicated methods rather than direct structure reads.
+
+- 25) Redundant invariant checks persist on hot paths after prepared endpoint caching
+  - Severity: low
+  - Type: redundant code / performance
+  - Evidence:
+  - `validate_config` enforces URL/query structural invariants in `src/http/endpoint/validate.rs`.
+  - `build_url_prepared` repeats several static checks (slot spec presence and mismatch checks) in `src/http/endpoint/request.rs`.
+  - Risk:
+  - Additional per-call overhead and larger maintenance surface for logically identical checks.
+  - Potential drift if one validation path changes and the other is not kept in sync.
+  - Proposed direction:
+  - Separate one-time static validation from per-call dynamic input validation.
+  - Retain defense-in-depth where safety critical, but document and centralize any intentionally duplicated checks.
+
+- 26) Thin forwarding layer `runtime/synthetic_modules.rs` is functionally redundant
+  - Severity: low
+  - Type: redundant code / structure
+  - Evidence:
+  - `install_synthetic_modules` in `src/runtime/synthetic_modules.rs` only forwards to `builtins::bundle_builtin_modules`.
+  - Risk:
+  - Minor indirection and naming duplication without additional invariants or abstraction value.
+  - Proposed direction:
+  - Either remove the forwarding module and call `builtins::bundle_builtin_modules` directly, or keep it but explicitly document that it is a stable seam for future runtime module composition.
 
 ## Additional audit notes
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
