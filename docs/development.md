@@ -66,6 +66,12 @@ When changing runtime-facing behavior:
 - Keep the boundary explicit: endpoint transport injection (`MechanicsPoolConfig.endpoint_http_client`) is a Rust-side pool config concern, not a JSON job config field.
 - If upgrading `boa_engine`, update `src/executor.rs` job routing and keep `job_routing_harness_covers_all_current_boa_job_variants` passing with explicit coverage for any newly constructible job variants.
 
+Runtime builtins layout:
+- Synthetic runtime modules are defined under `src/runtime/builtins/*.rs`.
+- Register all builtins from `src/runtime/builtins/mod.rs` via `bundle_builtin_modules(...)`.
+- Keep `src/runtime/synthetic_modules.rs` as a thin adapter that only calls the bundle helper.
+- When adding a new builtin module, add a focused file in `src/runtime/builtins/`, expose a `register(...)` function there, and wire it into `bundle_builtin_modules(...)`.
+
 When changing config validation or endpoint behavior:
 - Add or update tests under `src/http/tests/` and `src/pool/tests/`.
 - Re-check ignored endpoint network tests if the behavior involves HTTP timeout/status/size handling.

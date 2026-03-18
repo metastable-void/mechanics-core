@@ -16,6 +16,7 @@ use serde_json::Value;
 use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
 
 mod buffer_like;
+mod builtins;
 mod synthetic_modules;
 
 #[derive(Default, Debug)]

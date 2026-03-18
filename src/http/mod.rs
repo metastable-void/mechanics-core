@@ -1,14 +1,15 @@
 mod config;
 mod endpoint;
+mod headers;
 mod options;
 mod query;
+mod retry;
 mod template;
 mod transport;
 
 pub use config::MechanicsConfig;
-pub use endpoint::{
-    EndpointBodyType, EndpointRetryPolicy, HttpEndpoint, QuerySpec, SlottedQueryMode, UrlParamSpec,
-};
+pub use endpoint::{EndpointBodyType, HttpEndpoint, QuerySpec, SlottedQueryMode, UrlParamSpec};
+pub use retry::EndpointRetryPolicy;
 pub use transport::{
     EndpointHttpClient, EndpointHttpRequest, EndpointHttpRequestBody, EndpointHttpResponse,
     HttpMethod, ReqwestEndpointHttpClient,
