@@ -303,7 +303,8 @@ impl EndpointRetryPolicy {
 
     fn backoff_delay_ms(&self, attempt: usize) -> u64 {
         let exp = (attempt.saturating_sub(1)).min(20);
-        let factor = 2u64.saturating_pow(exp as u32);
+        let exp_u32 = u32::try_from(exp).unwrap_or(20);
+        let factor = 2u64.saturating_pow(exp_u32);
         self.base_backoff_ms
             .saturating_mul(factor)
             .min(self.max_backoff_ms)
@@ -554,7 +555,7 @@ impl HttpEndpoint {
             }
         }
 
-        let mut template_probe = String::with_capacity(self.url_template.len() + 16);
+        let mut template_probe = String::with_capacity(self.url_template.len().saturating_add(16));
         for chunk in chunks {
             match chunk {
                 UrlTemplateChunk::Literal(s) => template_probe.push_str(&s),
@@ -724,7 +725,7 @@ impl HttpEndpoint {
             }
         }
 
-        let mut resolved_url = String::with_capacity(self.url_template.len() + 16);
+        let mut resolved_url = String::with_capacity(self.url_template.len().saturating_add(16));
         for chunk in chunks {
             match chunk {
                 UrlTemplateChunk::Literal(s) => resolved_url.push_str(&s),
@@ -1088,20 +1089,30 @@ fn parse_url_template(template: &str) -> std::io::Result<(Vec<UrlTemplateChunk>,
             break;
         };
 
-        let open = cursor + open_rel;
+        let open = cursor.checked_add(open_rel).ok_or(Error::new(
+            ErrorKind::InvalidInput,
+            "url_template index overflow",
+        ))?;
         if open > cursor {
             chunks.push(UrlTemplateChunk::Literal(template[cursor..open].to_owned()));
         }
 
-        let Some(close_rel) = template[open + 1..].find('}') else {
+        let after_open = open.checked_add(1).ok_or(Error::new(
+            ErrorKind::InvalidInput,
+            "url_template index overflow",
+        ))?;
+        let Some(close_rel) = template[after_open..].find('}') else {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 "url_template contains unmatched `{`",
             ));
         };
 
-        let close = open + 1 + close_rel;
-        let slot = &template[open + 1..close];
+        let close = after_open.checked_add(close_rel).ok_or(Error::new(
+            ErrorKind::InvalidInput,
+            "url_template index overflow",
+        ))?;
+        let slot = &template[after_open..close];
         if slot.is_empty() {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
@@ -1126,11 +1137,17 @@ fn parse_url_template(template: &str) -> std::io::Result<(Vec<UrlTemplateChunk>,
         let slot_owned = slot.to_owned();
         slots.push(slot_owned.clone());
         chunks.push(UrlTemplateChunk::Slot(slot_owned));
-        cursor = close + 1;
+        cursor = close.checked_add(1).ok_or(Error::new(
+            ErrorKind::InvalidInput,
+            "url_template index overflow",
+        ))?;
     }
 
     if let Some(stray) = template[cursor..].find('}') {
-        let idx = cursor + stray;
+        let idx = cursor.checked_add(stray).ok_or(Error::new(
+            ErrorKind::InvalidInput,
+            "url_template index overflow",
+        ))?;
         return Err(Error::new(
             ErrorKind::InvalidInput,
             format!("url_template contains unmatched `}}` at byte index {idx}"),

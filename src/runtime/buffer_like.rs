@@ -12,6 +12,10 @@ pub(super) fn js_range_error(message: impl AsRef<str>) -> JsError {
     JsError::from_native(JsNativeError::range().with_message(message.as_ref().to_owned()))
 }
 
+fn u64_to_usize(value: u64, field: &str) -> JsResult<usize> {
+    usize::try_from(value).map_err(|_| js_range_error(format!("{field} exceeds usize range")))
+}
+
 fn read_bytes_from_array_buffer_range(
     buffer: &JsArrayBuffer,
     offset: usize,
@@ -57,8 +61,8 @@ pub(super) fn try_extract_buffer_like_bytes(
         };
         let array_buffer = JsArrayBuffer::from_object(buffer_object.clone())
             .map_err(|_| js_type_error("DataView backed by SharedArrayBuffer is not supported"))?;
-        let offset = data_view.byte_offset(context)? as usize;
-        let len = data_view.byte_length(context)? as usize;
+        let offset = u64_to_usize(data_view.byte_offset(context)?, "DataView byte_offset")?;
+        let len = u64_to_usize(data_view.byte_length(context)?, "DataView byte_length")?;
         return read_bytes_from_array_buffer_range(&array_buffer, offset, len).map(Some);
     }
 
@@ -118,10 +122,12 @@ pub(super) fn fill_random_buffer_like(value: &JsValue, context: &mut Context) ->
         };
         let array_buffer = JsArrayBuffer::from_object(buffer_object.clone())
             .map_err(|_| js_type_error("DataView backed by SharedArrayBuffer is not supported"))?;
+        let offset = u64_to_usize(data_view.byte_offset(context)?, "DataView byte_offset")?;
+        let len = u64_to_usize(data_view.byte_length(context)?, "DataView byte_length")?;
         return fill_random_in_array_buffer_range(
             &array_buffer,
-            data_view.byte_offset(context)? as usize,
-            data_view.byte_length(context)? as usize,
+            offset,
+            len,
         );
     }
 

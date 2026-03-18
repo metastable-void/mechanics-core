@@ -79,6 +79,26 @@ impl Queue {
             .map(|(k, _)| *k)
     }
 
+    fn instant_checked_add(base: JsInstant, delta: Duration) -> Option<JsInstant> {
+        let base_ms = u128::from(base.millis_since_epoch());
+        let delta_ms = delta.as_millis();
+        let total_ms = base_ms.checked_add(delta_ms)?;
+        let total_ms = u64::try_from(total_ms).ok()?;
+        Self::js_instant_from_millis(total_ms)
+    }
+
+    fn js_instant_from_millis(ms: u64) -> Option<JsInstant> {
+        let nanos = (ms % 1000).checked_mul(1_000_000)?;
+        let nanos = u32::try_from(nanos).ok()?;
+        Some(JsInstant::new(ms / 1000, nanos))
+    }
+
+    fn millis_until_or_zero(later: JsInstant, earlier: JsInstant) -> u64 {
+        later
+            .millis_since_epoch()
+            .saturating_sub(earlier.millis_since_epoch())
+    }
+
     /// Executes all due timeout jobs and keeps only future/cancel-surviving entries.
     fn drain_timeout_jobs(&self, context: &mut Context) -> JsResult<()> {
         let now = context.clock().now();
@@ -134,9 +154,12 @@ impl JobExecutor for Queue {
             Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
             Job::TimeoutJob(t) => {
                 let now = context.clock().now();
+                let at = Self::instant_checked_add(now, t.timeout().into()).unwrap_or_else(|| {
+                    Self::js_instant_from_millis(u64::MAX).unwrap_or(JsInstant::new(u64::MAX, 0))
+                });
                 self.timeout_jobs
                     .borrow_mut()
-                    .entry(now + t.timeout())
+                    .entry(at)
                     .or_default()
                     .push(t);
             }
@@ -196,12 +219,17 @@ impl JobExecutor for Queue {
                         if next_timeout_at <= now {
                             Duration::ZERO
                         } else {
-                            let mut d: Duration = (next_timeout_at - now).into();
+                            let mut d = Duration::from_millis(Self::millis_until_or_zero(
+                                next_timeout_at,
+                                now,
+                            ));
                             if let Some(deadline) = *self.deadline.borrow() {
                                 let remaining = if deadline <= now {
                                     Duration::ZERO
                                 } else {
-                                    (deadline - now).into()
+                                    Duration::from_millis(Self::millis_until_or_zero(
+                                        deadline, now,
+                                    ))
                                 };
                                 d = d.min(remaining);
                             }
@@ -222,8 +250,7 @@ impl JobExecutor for Queue {
                         if deadline <= now {
                             return Err(Self::timeout_error());
                         }
-                        let d: Duration = (deadline - now).into();
-                        d
+                        Duration::from_millis(Self::millis_until_or_zero(deadline, now))
                     };
                     match tokio::time::timeout(remaining, future::poll_once(group.next())).await {
                         Ok(result) => result,

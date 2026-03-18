@@ -129,10 +129,26 @@ impl RuntimeInternal {
                 JsNativeError::range().with_message("Configured max_execution_time is too large"),
             ));
         }
-        let deadline_ms = deadline_ms as u64;
+        let deadline_ms = u64::try_from(deadline_ms).map_err(|_| {
+            JsError::from_native(
+                JsNativeError::range().with_message("Configured max_execution_time is too large"),
+            )
+        })?;
+        let nanos = (deadline_ms % 1000)
+            .checked_mul(1_000_000)
+            .ok_or_else(|| {
+                JsError::from_native(
+                    JsNativeError::range().with_message("Configured max_execution_time is too large"),
+                )
+            })?;
+        let nanos = u32::try_from(nanos).map_err(|_| {
+            JsError::from_native(
+                JsNativeError::range().with_message("Configured max_execution_time is too large"),
+            )
+        })?;
         Ok(JsInstant::new(
             deadline_ms / 1000,
-            ((deadline_ms % 1000) * 1_000_000) as u32,
+            nanos,
         ))
     }
 
