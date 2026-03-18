@@ -21,6 +21,39 @@ across jobs.
 
 Public API re-exports are in `src/lib.rs`.
 
+## Scopes
+### In scope
+- Execute user-provided JavaScript modules safely inside isolated Boa realms.
+- Provide a synchronous Rust API (`MechanicsPool`) for bounded worker-pool execution.
+- Keep runtime behavior stateless across jobs; no cross-job mutable runtime carryover.
+- Offer JSON-first runtime/job configuration (`serde` parseability is a first-class feature).
+- Provide preconfigured outbound HTTP endpoint execution via `mechanics:endpoint`, including:
+- URL/query/header policy enforcement from Rust config.
+- Request/response body modes and size/time limits.
+- Endpoint-level retry/backoff/rate-limit policy.
+- Expose a minimal set of built-in utility modules useful for automation/orchestration scripts (`form-urlencoded`, `base64`, `hex`, `base32`, `rand`, `uuid`).
+- Support pluggable pool-level HTTP transport for deterministic/mock testing.
+
+### Out of scope (for now)
+- Full async-first Rust API surface (Tokio-agnostic async abstractions).
+- General-purpose workflow/orchestration DSL beyond JavaScript execution itself.
+- Distributed scheduling, persistence, and cross-process job coordination.
+- Cross-job in-process cache guarantees or sticky-worker semantics.
+- Turnkey observability backend integrations (metrics/traces exporters).
+- HTTP API hosting concerns (service routing, auth middleware, request admission).
+
+### Planned integration architecture
+- This crate is planned to be embedded behind a separate Rust HTTP server that exposes automation-as-a-service endpoints.
+- Bearer-token authentication/authorization is planned to be enforced in that server layer, not inside this crate.
+- Metrics exporters and service-level telemetry pipelines are also planned for that server layer, not in `mechanics-core`.
+
+### Maturity path toward crates.io
+- Pre-publication: favor correctness, safety, and API clarity; breaking Rust API changes are allowed.
+- Stabilization phase (before crates.io release):
+- tighten compatibility guarantees,
+- freeze core config/job wire contracts,
+- provide migration notes for any remaining breaking changes.
+
 ## API design constraint
 - JSON-first is a core API constraint.
 - `MechanicsJob`, `MechanicsConfig`, `HttpEndpoint`, and related runtime-facing config types are intended to be first-class `serde_json` inputs.

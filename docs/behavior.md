@@ -7,6 +7,11 @@
 - utility synthetic modules (`mechanics:form-urlencoded`, `mechanics:base64`, `mechanics:hex`, `mechanics:base32`, `mechanics:rand`, `mechanics:uuid`),
 - a worker pool for concurrent job execution.
 
+Deployment boundary note:
+- `mechanics-core` is intended as an embeddable execution engine.
+- Planned bearer-token authentication/authorization and HTTP automation-as-a-service endpoint exposure belong to an outer Rust HTTP server layer.
+- Planned metrics exporter integrations also belong to that outer service layer.
+
 The crate API is exported from `src/lib.rs`:
 - `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`
 - `MechanicsJob`, `MechanicsExecutionLimits`
