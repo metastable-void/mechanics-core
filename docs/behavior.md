@@ -68,7 +68,7 @@ export default async function main(arg) {
 
 Resolution behavior:
 - `name` must match a key in `MechanicsConfig.endpoints`.
-- Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`DELETE`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
+- Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
 - URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
 - URL template must not contain query string or fragment; use `query_specs` for query output.
 - Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
@@ -103,7 +103,8 @@ Resolution behavior:
 - `body` omission semantics:
 - omitted or `undefined` means "no request body".
 - explicit `null` is treated as JSON `null` (not omission) and is sent for JSON request mode.
-- for `GET`/`DELETE`, any provided `body` value (including explicit `null`) is rejected.
+- method/body baseline is aligned to HTTP Semantics (RFC 9110): request bodies are accepted for `POST`/`PUT`/`PATCH`.
+- for `GET`/`DELETE`/`HEAD`/`OPTIONS`, any provided `body` value (including explicit `null`) is rejected.
 - `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
 Config shape is JSON-friendly and snake_case (`serde`):
@@ -140,6 +141,11 @@ Configuration validation:
 - Endpoint config is validated when building/deserializing `MechanicsConfig`.
 - Invalid configs fail fast (for example: malformed URL template, missing/extra `url_param_specs`, invalid slot/query rules, invalid bounds/defaults).
 - No cross-job cache is introduced by this validation; each supplied config object is validated independently.
+- `MechanicsConfig` composition helpers:
+- `with_endpoint(name, endpoint)`: validates and inserts/replaces one endpoint.
+- `with_endpoint_overrides(overrides)`: validates and applies multiple endpoint overrides.
+- `without_endpoint(name)`: removes one endpoint if present.
+- These helpers are for per-job config composition before submission; they do not mutate already-running worker state.
 
 Minimal endpoint config example (JSON):
 

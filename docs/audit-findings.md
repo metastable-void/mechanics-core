@@ -246,18 +246,23 @@ This report supersedes the previous content of this file. Prior versions are arc
 - Proposal:
 - Add optional per-endpoint retry policy (`max_attempts`, `base_backoff_ms`, `max_backoff_ms`, `jitter`, `retry_on_status`, `retry_on_io_errors`).
 - Include attempt metadata in endpoint response for observability.
+- Design sketch:
+- `HttpEndpoint::with_retry_policy(EndpointRetryPolicy)` with conservative defaults (`max_attempts = 1`).
+- Retry only idempotent methods by default (`GET`/`HEAD`/`OPTIONS`) unless explicitly opted in for mutating methods.
+- Emit attempt metadata on response (`attempt`, `max_attempts`) and expose terminal retry reason in execution errors.
 
 ### 13) Method support is narrow for modern API/tooling integrations
 - Severity: low
 - Category: missing capability (protocol coverage)
-- Status: open
+- Status: done (2026-03-18)
 - Evidence:
-- `HttpMethod` supports only `GET/POST/PUT/DELETE` (`src/http.rs:21` to `src/http.rs:30`).
+- Previous implementation supported only `GET/POST/PUT/DELETE`.
 - Impact:
 - Integrations requiring `PATCH`, `HEAD`, or `OPTIONS` need awkward endpoint workarounds or are blocked.
-- Proposal:
-- Extend `HttpMethod` enum to include `Patch`, `Head`, and `Options`.
-- Keep existing body rules by method capability.
+- Resolution:
+- Extended `HttpMethod` enum and request mapping to include `PATCH`, `HEAD`, and `OPTIONS`.
+- Documented method/body policy against HTTP Semantics (RFC 9110) baseline.
+- Added deterministic tests for method deserialization/body-support matrix and validation-path body rejection behavior.
 
 ### 14) No pool telemetry hooks for autoscaling and SLO-driven orchestration
 - Severity: medium
@@ -270,18 +275,24 @@ This report supersedes the previous content of this file. Prior versions are arc
 - Proposal:
 - Add `MechanicsPool::stats()` snapshot (live workers, desired workers, queue depth/capacity, restart-blocked state, restart counters).
 - Optionally add callback hooks for worker crash/restart events.
+- Design sketch:
+- Introduce `MechanicsPoolStats` with monotonic counters (`jobs_submitted`, `jobs_completed`, `jobs_failed`, `worker_restarts`) and gauges (`live_workers`, `queue_depth`, `restart_blocked`).
+- Add low-overhead `MechanicsPool::stats()` snapshot method plus optional event hook registration for lifecycle events.
 
 ### 15) Config ergonomics for large endpoint sets are limited
 - Severity: low
 - Category: missing capability (developer experience)
-- Status: open
+- Status: done (2026-03-18)
 - Evidence:
-- `MechanicsConfig` is built as one complete in-memory map and validated eagerly (`src/http.rs:1049` to `src/http.rs:1077`).
-- There is no layered composition/override API for environment-specific endpoint differences.
+- `MechanicsConfig` originally required full-map construction and eager validation.
 - Impact:
 - Multi-tenant or staged orchestrators must build custom merge logic around the crate.
-- Proposal:
-- Add helper constructors for layered composition (`from_base_with_overrides`, `merge_validated`) and deterministic conflict reporting.
+- Resolution:
+- Added validated composition helpers on `MechanicsConfig`:
+- `with_endpoint(name, endpoint)` for validated upsert.
+- `with_endpoint_overrides(overrides)` for validated bulk patch/merge.
+- `without_endpoint(name)` for endpoint removal.
+- Explicitly documented that these helpers patch config objects before job submission, not mutable live worker runtime state.
 
 ### 16) Built-in runtime modules do not expose orchestration primitives
 - Severity: low

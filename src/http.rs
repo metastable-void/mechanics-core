@@ -25,8 +25,14 @@ pub enum HttpMethod {
     Post,
     /// HTTP `PUT`.
     Put,
+    /// HTTP `PATCH`.
+    Patch,
     /// HTTP `DELETE`.
     Delete,
+    /// HTTP `HEAD`.
+    Head,
+    /// HTTP `OPTIONS`.
+    Options,
 }
 
 impl HttpMethod {
@@ -35,7 +41,10 @@ impl HttpMethod {
             Self::Get => "GET",
             Self::Post => "POST",
             Self::Put => "PUT",
+            Self::Patch => "PATCH",
             Self::Delete => "DELETE",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
         }
     }
 
@@ -44,12 +53,15 @@ impl HttpMethod {
             Self::Get => reqwest::Method::GET,
             Self::Post => reqwest::Method::POST,
             Self::Put => reqwest::Method::PUT,
+            Self::Patch => reqwest::Method::PATCH,
             Self::Delete => reqwest::Method::DELETE,
+            Self::Head => reqwest::Method::HEAD,
+            Self::Options => reqwest::Method::OPTIONS,
         }
     }
 
     fn supports_request_body(&self) -> bool {
-        matches!(self, Self::Post | Self::Put)
+        matches!(self, Self::Post | Self::Put | Self::Patch)
     }
 }
 
@@ -1084,6 +1096,42 @@ impl MechanicsConfig {
             })?;
         }
         Ok(())
+    }
+
+    /// Returns a new config with one endpoint inserted or replaced after validation.
+    pub fn with_endpoint<S: Into<String>>(
+        mut self,
+        name: S,
+        endpoint: HttpEndpoint,
+    ) -> Result<Self, MechanicsError> {
+        let name = name.into();
+        endpoint
+            .validate_config()
+            .map_err(|e| MechanicsError::runtime_pool(format!("invalid endpoint `{name}` config: {e}")))?;
+        self.endpoints.insert(name, endpoint);
+        Ok(self)
+    }
+
+    /// Returns a new config with all endpoint overrides validated and applied.
+    ///
+    /// Existing endpoints with matching names are replaced; other endpoints are retained.
+    pub fn with_endpoint_overrides(
+        mut self,
+        overrides: HashMap<String, HttpEndpoint>,
+    ) -> Result<Self, MechanicsError> {
+        for (name, endpoint) in overrides {
+            endpoint.validate_config().map_err(|e| {
+                MechanicsError::runtime_pool(format!("invalid endpoint `{name}` config: {e}"))
+            })?;
+            self.endpoints.insert(name, endpoint);
+        }
+        Ok(self)
+    }
+
+    /// Returns a new config with one endpoint removed, if present.
+    pub fn without_endpoint(mut self, name: &str) -> Self {
+        self.endpoints.remove(name);
+        self
     }
 }
 

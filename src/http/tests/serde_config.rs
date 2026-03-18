@@ -119,3 +119,75 @@ fn mechanics_config_rejects_empty_default_for_optional_allow_empty_with_min_byte
         .expect_err("empty optional_allow_empty default should violate min_bytes");
     assert!(err.msg().contains("too short"));
 }
+
+#[test]
+fn endpoint_deserializes_additional_http_methods() {
+    for method in ["patch", "head", "options"] {
+        let endpoint: HttpEndpoint = serde_json::from_value(json!({
+            "method": method,
+            "url_template": "https://example.com/{id}",
+            "url_param_specs": { "id": {} }
+        }))
+        .expect("endpoint should deserialize additional method");
+
+        let mut options = EndpointCallOptions::default();
+        options.url_params.insert("id".to_owned(), "1".to_owned());
+        let url = endpoint
+            .build_url(&options)
+            .expect("deserialized endpoint should build URL");
+        assert_eq!(url.as_str(), "https://example.com/1");
+    }
+}
+
+#[test]
+fn http_method_body_support_matrix_matches_contract() {
+    assert!(HttpMethod::Post.supports_request_body());
+    assert!(HttpMethod::Put.supports_request_body());
+    assert!(HttpMethod::Patch.supports_request_body());
+    assert!(!HttpMethod::Get.supports_request_body());
+    assert!(!HttpMethod::Delete.supports_request_body());
+    assert!(!HttpMethod::Head.supports_request_body());
+    assert!(!HttpMethod::Options.supports_request_body());
+}
+
+#[test]
+fn mechanics_config_composition_helpers_apply_validation_and_overrides() {
+    let base = MechanicsConfig::new(HashMap::from([(
+        "base".to_owned(),
+        HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
+            .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())])),
+    )]))
+    .expect("base config should build");
+
+    let over = HttpEndpoint::new(HttpMethod::Patch, "https://example.com/{id}", HashMap::new())
+        .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
+    let cfg = base
+        .clone()
+        .with_endpoint("base", over.clone())
+        .expect("single endpoint override should validate");
+    assert_eq!(cfg.endpoints["base"].method, HttpMethod::Patch);
+
+    let cfg = base
+        .with_endpoint_overrides(HashMap::from([("extra".to_owned(), over)]))
+        .expect("bulk overrides should validate");
+    assert!(cfg.endpoints.contains_key("base"));
+    assert!(cfg.endpoints.contains_key("extra"));
+
+    let removed = cfg.without_endpoint("extra");
+    assert!(!removed.endpoints.contains_key("extra"));
+}
+
+#[test]
+fn mechanics_config_composition_helpers_reject_invalid_endpoint() {
+    let base = MechanicsConfig::new(HashMap::new()).expect("base config should build");
+    let invalid = HttpEndpoint::new(HttpMethod::Get, "https://example.com/{id}", HashMap::new())
+        .with_url_param_specs(HashMap::from([(
+            "other".to_owned(),
+            UrlParamSpec::default(),
+        )]));
+
+    let err = base
+        .with_endpoint("bad", invalid)
+        .expect_err("invalid endpoint must be rejected");
+    assert!(err.msg().contains("missing url_param_specs entry for slot `id`"));
+}

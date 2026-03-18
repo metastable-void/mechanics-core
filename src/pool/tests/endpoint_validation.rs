@@ -131,6 +131,72 @@ fn endpoint_get_rejects_explicit_null_body() {
 }
 
 #[test]
+fn endpoint_head_rejects_body() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let endpoint = HttpEndpoint::new(
+        HttpMethod::Head,
+        "https://example.com/anything",
+        HashMap::new(),
+    );
+    let config = endpoint_config("ep", endpoint);
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: { x: 1 } });
+            }
+        "#;
+    let job = make_job(source, config, Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("HEAD endpoint should reject request body");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("does not accept a request body"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[test]
+fn endpoint_options_rejects_body() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let endpoint = HttpEndpoint::new(
+        HttpMethod::Options,
+        "https://example.com/anything",
+        HashMap::new(),
+    );
+    let config = endpoint_config("ep", endpoint);
+
+    let source = r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("ep", { body: { x: 1 } });
+            }
+        "#;
+    let job = make_job(source, config, Value::Null);
+    let err = pool
+        .run(job)
+        .expect_err("OPTIONS endpoint should reject request body");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("does not accept a request body"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[test]
 fn endpoint_bytes_request_type_rejects_non_buffer_body() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
