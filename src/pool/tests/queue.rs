@@ -10,7 +10,7 @@ fn run_maps_reply_timeout_to_run_timeout() {
 
     {
         let mut workers = pool.shared.workers.write();
-        workers.insert(0, thread::spawn(|| {}));
+        workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
     }
 
     let job = make_job(
@@ -52,6 +52,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
         enqueue_timeout: Duration::from_secs(1),
         run_timeout: Duration::from_millis(5),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let (reply_tx, _reply_rx) = bounded(1);
@@ -138,6 +139,7 @@ fn run_reports_enqueue_timeout_without_network_dependencies() {
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(200),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let (reply_tx, _reply_rx) = bounded(1);
@@ -195,6 +197,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnec
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(50),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let job = make_job(
@@ -240,6 +243,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_cha
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(200),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let consumer = thread::spawn(move || {

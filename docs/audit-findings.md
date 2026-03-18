@@ -16,34 +16,12 @@ Update this section on code additions.
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`85 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`86 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - Result: pass (2026-03-18).
 
 ## Active findings
-- 18) Response-size limits are enforced too late for default reqwest transport (memory scaling risk).
-  - Evidence: default transport fully buffers body before returning (`src/http.rs`: `ReqwestEndpointHttpClient::execute`, `res.bytes().await` near line 157).
-  - Evidence: endpoint size limit check happens after transport returns the already-buffered body (`src/http.rs`, near lines 957 and 968).
-  - Impact: large responses can consume unbounded memory up to remote payload size, even when endpoint/pool max-bytes is configured.
-  - Proposed fix: enforce streaming byte caps inside transport read loop (or return streaming body abstraction) so over-limit responses fail before full allocation.
-
-- 19) Endpoint execution does repeated parse/validation/allocation on the per-call hot path.
-  - Evidence: URL template is reparsed each call in `build_url` (`parse_url_template`) (`src/http.rs`, near line 692).
-  - Evidence: allowlisted query slots are rebuilt into a `HashSet` each call (`src/http.rs`, near line 812).
-  - Evidence: response/header allowlists are reparsed repeatedly (`allowlisted_header_names`) in request/response paths (`src/http.rs`, near lines 661 and 1036).
-  - Impact: avoidable CPU + allocation overhead under high QPS and/or many endpoints.
-  - Proposed fix: precompile endpoint config at validation time (parsed template chunks, normalized allowlists/sets) and reuse immutable prepared structures at runtime.
-
-- 20) Worker and supervisor coordination use fixed 100ms polling loops.
-  - Evidence: workers block on `recv_timeout(Duration::from_millis(100))` in main loop (`src/pool.rs`, near line 242).
-  - Evidence: supervisor also polls exit channel every 100ms (`src/pool.rs`, near line 514).
-  - Impact: periodic wakeups add idle overhead across many pools/workers, and introduce up to ~100ms reaction latency for shutdown/reconcile transitions.
-  - Proposed fix: use blocking receives with explicit shutdown signaling (or event-driven wakeups), reserving timed polling only where strictly required.
-
-- 21) Per-worker runtime footprint scales linearly with worker count.
-  - Evidence: each worker runtime creates its own Tokio current-thread runtime + LocalSet (`Queue::new`) (`src/executor.rs`, near lines 30 and 35).
-  - Impact: memory/runtime overhead increases with worker count; large pools may pay substantial duplicated runtime cost.
-  - Proposed fix: benchmark current model vs alternatives (shared runtime scheduler per process or per-pool), then choose based on latency/isolation tradeoffs.
+- None currently open.
 
 ## Additional audit notes
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
@@ -69,3 +47,7 @@ Update this section on code additions.
 - 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).
 - 16) Orchestration-primitives gap reframed and addressed: generalized orchestration module deemed unnecessary for this crate scope; added focused `mechanics:uuid` utility module (`v3`/`v4`/`v5`/`v6`/`v7`/`nil`/`max`) with docs/types/tests.
 - 17) Endpoint transport was fixed to reqwest internals: fixed with pool-level pluggable transport (`EndpointHttpClient`) plus default `ReqwestEndpointHttpClient`, including deterministic injected-client test coverage and docs.
+- 18) Late response-size enforcement in default reqwest transport: fixed by enforcing max-bytes during streaming body reads inside `ReqwestEndpointHttpClient` (before full buffering), with endpoint-side cap checks retained as defense-in-depth.
+- 19) Endpoint hot-path parse/allowlist allocation overhead: fixed by introducing per-job prepared endpoint caches (`PreparedHttpEndpoint`) in runtime state; caches are scoped to each `MechanicsJob` and dropped with job state (no cross-job leakage).
+- 20) Fixed 100ms worker/supervisor polling loops: fixed without regressing prior restart mitigations by switching workers to blocking channel select with explicit shutdown signaling, and supervisor to event-driven select plus periodic reconcile tick (for restart-window recovery logic).
+- 21) Per-worker Tokio runtime footprint scaling with worker count: documented as an intended design limitation (isolation-first worker model), not an immediate bug.

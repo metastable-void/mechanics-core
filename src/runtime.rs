@@ -1,7 +1,7 @@
 use crate::{
     error::MechanicsError,
     executor::{CustomModuleLoader, Queue},
-    http::{EndpointHttpClient, MechanicsConfig},
+    http::{EndpointHttpClient, MechanicsConfig, PreparedHttpEndpoint},
     job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
@@ -13,7 +13,7 @@ use boa_engine::{
 };
 use boa_gc::Finalize;
 use serde_json::Value;
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
 
 mod buffer_like;
 mod synthetic_modules;
@@ -72,6 +72,11 @@ pub(crate) struct MechanicsState {
     // SAFETY: Primitive scalar copied into runtime config; not a GC-managed value.
     #[unsafe_ignore_trace]
     default_response_max_bytes: Option<usize>,
+
+    // SAFETY: Prepared endpoint caches are Rust-owned data with no GC-managed values and are
+    // scoped to the current job state instance.
+    #[unsafe_ignore_trace]
+    prepared_endpoints: HashMap<String, PreparedHttpEndpoint>,
 }
 
 impl MechanicsState {
@@ -80,12 +85,14 @@ impl MechanicsState {
         endpoint_http_client: Arc<dyn EndpointHttpClient>,
         default_timeout_ms: Option<u64>,
         default_response_max_bytes: Option<usize>,
+        prepared_endpoints: HashMap<String, PreparedHttpEndpoint>,
     ) -> Self {
         Self {
             config,
             endpoint_http_client,
             default_timeout_ms,
             default_response_max_bytes,
+            prepared_endpoints,
         }
     }
 
@@ -99,6 +106,15 @@ impl MechanicsState {
 
     pub(crate) fn default_response_max_bytes(&self) -> Option<usize> {
         self.default_response_max_bytes
+    }
+
+    pub(crate) fn endpoint(
+        &self,
+        name: &str,
+    ) -> Option<(&crate::http::HttpEndpoint, &PreparedHttpEndpoint)> {
+        let endpoint = self.config.endpoints.get(name)?;
+        let prepared = self.prepared_endpoints.get(name)?;
+        Some((endpoint, prepared))
     }
 }
 
@@ -134,22 +150,17 @@ impl RuntimeInternal {
                 JsNativeError::range().with_message("Configured max_execution_time is too large"),
             )
         })?;
-        let nanos = (deadline_ms % 1000)
-            .checked_mul(1_000_000)
-            .ok_or_else(|| {
-                JsError::from_native(
-                    JsNativeError::range().with_message("Configured max_execution_time is too large"),
-                )
-            })?;
+        let nanos = (deadline_ms % 1000).checked_mul(1_000_000).ok_or_else(|| {
+            JsError::from_native(
+                JsNativeError::range().with_message("Configured max_execution_time is too large"),
+            )
+        })?;
         let nanos = u32::try_from(nanos).map_err(|_| {
             JsError::from_native(
                 JsNativeError::range().with_message("Configured max_execution_time is too large"),
             )
         })?;
-        Ok(JsInstant::new(
-            deadline_ms / 1000,
-            nanos,
-        ))
+        Ok(JsInstant::new(deadline_ms / 1000, nanos))
     }
 
     /// Builds a Boa context, injects runtime state, and exposes runtime synthetic modules.
@@ -205,11 +216,17 @@ impl RuntimeInternal {
         let config = job.config;
         let source = job.mod_source;
         self.hooks.clear();
+        let mut prepared_endpoints = HashMap::with_capacity(config.endpoints.len());
+        for (name, endpoint) in &config.endpoints {
+            let prepared = endpoint.prepare_runtime().map_err(JsError::from_rust)?;
+            prepared_endpoints.insert(name.clone(), prepared);
+        }
         let state = MechanicsState::new(
             config,
             Arc::clone(&self.endpoint_http_client),
             self.default_endpoint_timeout_ms,
             self.default_endpoint_response_max_bytes,
+            prepared_endpoints,
         );
 
         let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)?;

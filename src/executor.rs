@@ -227,9 +227,7 @@ impl JobExecutor for Queue {
                                 let remaining = if deadline <= now {
                                     Duration::ZERO
                                 } else {
-                                    Duration::from_millis(Self::millis_until_or_zero(
-                                        deadline, now,
-                                    ))
+                                    Duration::from_millis(Self::millis_until_or_zero(deadline, now))
                                 };
                                 d = d.min(remaining);
                             }

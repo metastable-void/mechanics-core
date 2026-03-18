@@ -6,7 +6,7 @@ use crate::{
 };
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
-    unbounded,
+    select, tick, unbounded,
 };
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use serde_json::Value;
@@ -132,12 +132,30 @@ struct WorkerExit {
 }
 
 #[derive(Debug)]
+struct WorkerHandle {
+    join: thread::JoinHandle<()>,
+    shutdown_tx: Sender<()>,
+}
+
+impl WorkerHandle {
+    fn is_finished(&self) -> bool {
+        self.join.is_finished()
+    }
+
+    #[cfg(test)]
+    fn from_join_for_test(join: thread::JoinHandle<()>) -> Self {
+        let (shutdown_tx, _shutdown_rx) = bounded::<()>(1);
+        Self { join, shutdown_tx }
+    }
+}
+
+#[derive(Debug)]
 struct MechanicsPoolShared {
     tx: Sender<PoolMessage>,
     rx: Receiver<PoolMessage>,
     exit_tx: Sender<WorkerExit>,
     exit_rx: Receiver<WorkerExit>,
-    workers: RwLock<HashMap<usize, thread::JoinHandle<()>>>,
+    workers: RwLock<HashMap<usize, WorkerHandle>>,
     next_worker_id: AtomicUsize,
     desired_worker_count: usize,
     closed: AtomicBool,
@@ -152,11 +170,11 @@ struct MechanicsPoolShared {
 }
 
 impl MechanicsPoolShared {
-    fn workers_read(&self) -> RwLockReadGuard<'_, HashMap<usize, thread::JoinHandle<()>>> {
+    fn workers_read(&self) -> RwLockReadGuard<'_, HashMap<usize, WorkerHandle>> {
         self.workers.read()
     }
 
-    fn workers_write(&self) -> RwLockWriteGuard<'_, HashMap<usize, thread::JoinHandle<()>>> {
+    fn workers_write(&self) -> RwLockWriteGuard<'_, HashMap<usize, WorkerHandle>> {
         self.workers.write()
     }
 
@@ -164,7 +182,7 @@ impl MechanicsPoolShared {
         self.restart_guard.lock()
     }
 
-    fn remove_worker_handle(&self, worker_id: usize) -> Option<thread::JoinHandle<()>> {
+    fn remove_worker_handle(&self, worker_id: usize) -> Option<WorkerHandle> {
         let mut workers = self.workers_write();
         workers.remove(&worker_id)
     }
@@ -191,7 +209,7 @@ impl MechanicsPoolShared {
             }
         }
         for handle in finished_handles {
-            let _ = handle.join();
+            let _ = handle.join.join();
         }
     }
 
@@ -200,8 +218,8 @@ impl MechanicsPoolShared {
 
         let rx = shared.rx.clone();
         let exit_tx = shared.exit_tx.clone();
-        let shared_for_worker = Arc::clone(shared);
         let (ready_tx, ready_rx) = bounded::<Result<(), MechanicsError>>(1);
+        let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
         let endpoint_http_client = Arc::clone(&shared.endpoint_http_client);
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
@@ -239,36 +257,37 @@ impl MechanicsPoolShared {
                         .set_default_endpoint_response_max_bytes(default_http_response_max_bytes);
 
                     loop {
-                        match rx.recv_timeout(Duration::from_millis(100)) {
-                            Ok(PoolMessage::Run(pool_job)) => {
-                                if pool_job.canceled.load(Ordering::Acquire) {
-                                    let _ = pool_job.reply.send(Err(MechanicsError::canceled(
-                                        "job timed out before execution",
-                                    )));
-                                    continue;
-                                }
-                                let result =
-                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                        runtime.run_source(pool_job.job)
-                                    }));
-                                match result {
-                                    Ok(result) => {
-                                        let _ = pool_job.reply.send(result);
+                        select! {
+                            recv(shutdown_rx) -> _ => {
+                                break;
+                            }
+                            recv(rx) -> msg => {
+                                match msg {
+                                    Ok(PoolMessage::Run(pool_job)) => {
+                                        if pool_job.canceled.load(Ordering::Acquire) {
+                                            let _ = pool_job.reply.send(Err(MechanicsError::canceled(
+                                                "job timed out before execution",
+                                            )));
+                                            continue;
+                                        }
+                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            runtime.run_source(pool_job.job)
+                                        }));
+                                        match result {
+                                            Ok(result) => {
+                                                let _ = pool_job.reply.send(result);
+                                            }
+                                            Err(_) => {
+                                                let _ = pool_job.reply.send(Err(MechanicsError::panic(
+                                                    "worker panicked while running job",
+                                                )));
+                                                break;
+                                            }
+                                        }
                                     }
-                                    Err(_) => {
-                                        let _ = pool_job.reply.send(Err(MechanicsError::panic(
-                                            "worker panicked while running job",
-                                        )));
-                                        break;
-                                    }
+                                    Err(_) => break,
                                 }
                             }
-                            Err(RecvTimeoutError::Timeout) => {
-                                if shared_for_worker.closed.load(Ordering::Acquire) {
-                                    break;
-                                }
-                            }
-                            Err(RecvTimeoutError::Disconnected) => break,
                         }
                     }
                 }));
@@ -290,7 +309,13 @@ impl MechanicsPoolShared {
 
         {
             let mut workers = shared.workers_write();
-            workers.insert(worker_id, handle);
+            workers.insert(
+                worker_id,
+                WorkerHandle {
+                    join: handle,
+                    shutdown_tx,
+                },
+            );
         }
 
         match ready_rx.recv() {
@@ -300,13 +325,13 @@ impl MechanicsPoolShared {
             }
             Ok(Err(err)) => {
                 if let Some(handle) = shared.remove_worker_handle(worker_id) {
-                    let _ = handle.join();
+                    let _ = handle.join.join();
                 }
                 Err(err)
             }
             Err(_) => {
                 if let Some(handle) = shared.remove_worker_handle(worker_id) {
-                    let _ = handle.join();
+                    let _ = handle.join.join();
                 }
                 Err(MechanicsError::runtime_pool(
                     "worker exited before startup completed",
@@ -360,6 +385,7 @@ pub struct MechanicsPool {
     enqueue_timeout: Duration,
     run_timeout: Duration,
     supervisor: Option<thread::JoinHandle<()>>,
+    supervisor_shutdown_tx: Option<Sender<()>>,
 }
 
 /// Non-blocking snapshot of observable pool state.
@@ -501,31 +527,36 @@ impl MechanicsPool {
         }
 
         let supervisor_shared = Arc::clone(&shared);
+        let (supervisor_shutdown_tx, supervisor_shutdown_rx) = bounded::<()>(1);
+        let reconcile_tick = tick(Self::reconcile_interval(config.restart_window));
         let supervisor = thread::Builder::new()
             .name("mechanics-supervisor".to_owned())
             .spawn(move || {
                 loop {
+                    select! {
+                        recv(supervisor_shutdown_rx) -> _ => {
+                            break;
+                        }
+                        recv(supervisor_shared.exit_rx) -> event => {
+                            match event {
+                                Ok(event) => {
+                                    let maybe_old = {
+                                        let mut workers = supervisor_shared.workers_write();
+                                        workers.remove(&event.worker_id)
+                                    };
+                                    if let Some(handle) = maybe_old {
+                                        let _ = handle.join.join();
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        recv(reconcile_tick) -> _ => {}
+                    }
+
                     if supervisor_shared.closed.load(Ordering::Acquire) {
                         break;
                     }
-
-                    match supervisor_shared
-                        .exit_rx
-                        .recv_timeout(Duration::from_millis(100))
-                    {
-                        Ok(event) => {
-                            let maybe_old = {
-                                let mut workers = supervisor_shared.workers_write();
-                                workers.remove(&event.worker_id)
-                            };
-                            if let Some(handle) = maybe_old {
-                                let _ = handle.join();
-                            }
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => break,
-                    }
-
                     MechanicsPoolShared::reconcile_workers(&supervisor_shared);
                 }
             })
@@ -538,7 +569,15 @@ impl MechanicsPool {
             enqueue_timeout: config.enqueue_timeout,
             run_timeout: config.run_timeout,
             supervisor: Some(supervisor),
+            supervisor_shutdown_tx: Some(supervisor_shutdown_tx),
         })
+    }
+
+    fn reconcile_interval(restart_window: Duration) -> Duration {
+        let quarter = restart_window.div_f64(4.0);
+        quarter
+            .max(Duration::from_millis(50))
+            .min(Duration::from_millis(500))
     }
 
     /// Enqueues a job and blocks until the script finishes or fails.
@@ -697,13 +736,24 @@ impl Drop for MechanicsPool {
             }
         }
 
+        {
+            let workers = self.shared.workers_read();
+            for handle in workers.values() {
+                let _ = handle.shutdown_tx.send(());
+            }
+        }
+
+        if let Some(tx) = self.supervisor_shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+
         if let Some(supervisor) = self.supervisor.take() {
             let _ = supervisor.join();
         }
 
         let mut workers = self.shared.workers_write();
         for (_, handle) in workers.drain() {
-            let _ = handle.join();
+            let _ = handle.join.join();
         }
     }
 }

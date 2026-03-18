@@ -124,11 +124,7 @@ pub(super) fn fill_random_buffer_like(value: &JsValue, context: &mut Context) ->
             .map_err(|_| js_type_error("DataView backed by SharedArrayBuffer is not supported"))?;
         let offset = u64_to_usize(data_view.byte_offset(context)?, "DataView byte_offset")?;
         let len = u64_to_usize(data_view.byte_length(context)?, "DataView byte_length")?;
-        return fill_random_in_array_buffer_range(
-            &array_buffer,
-            offset,
-            len,
-        );
+        return fill_random_in_array_buffer_range(&array_buffer, offset, len);
     }
 
     if let Ok(array_buffer) = JsArrayBuffer::from_object(object) {

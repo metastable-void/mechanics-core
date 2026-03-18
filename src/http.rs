@@ -84,6 +84,7 @@ pub struct EndpointHttpRequest {
     pub url: reqwest::Url,
     pub headers: HeaderMap,
     pub timeout_ms: Option<u64>,
+    pub response_max_bytes: Option<usize>,
     pub body: EndpointHttpRequestBody,
 }
 
@@ -159,7 +160,34 @@ impl EndpointHttpClient for ReqwestEndpointHttpClient {
             let status = res.status().as_u16();
             let content_length = res.content_length();
             let headers = res.headers().clone();
-            let body = res.bytes().await.map_err(into_io_error)?.to_vec();
+            if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
+                && len > max as u64
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "response body exceeds configured max bytes ({max}): content-length is {len}"
+                    ),
+                ));
+            }
+
+            let mut body = Vec::new();
+            let mut res = res;
+            while let Some(chunk) = res.chunk().await.map_err(into_io_error)? {
+                if let Some(max) = request.response_max_bytes {
+                    let next_len = body.len().checked_add(chunk.len()).ok_or(Error::new(
+                        ErrorKind::InvalidData,
+                        "response body size overflow while enforcing max bytes limit",
+                    ))?;
+                    if next_len > max {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            format!("response body exceeds configured max bytes ({max})"),
+                        ));
+                    }
+                }
+                body.extend_from_slice(&chunk);
+            }
             Ok(EndpointHttpResponse {
                 status,
                 headers,
@@ -610,16 +638,55 @@ impl HttpEndpoint {
         Ok(())
     }
 
+    pub(crate) fn prepare_runtime(&self) -> std::io::Result<PreparedHttpEndpoint> {
+        let (parsed_url_chunks, url_slot_names) = parse_url_template(&self.url_template)?;
+        let url_slot_set = url_slot_names.iter().cloned().collect::<HashSet<_>>();
+        let allowed_query_slots = self
+            .query_specs
+            .iter()
+            .filter_map(|spec| match spec {
+                QuerySpec::Slotted { slot, .. } => Some(slot.clone()),
+                QuerySpec::Const { .. } => None,
+            })
+            .collect::<HashSet<_>>();
+        let allowed_overrides = allowlisted_header_names(
+            &self.overridable_request_headers,
+            "overridable_request_headers",
+        )?;
+        let exposed_response_allowlist =
+            allowlisted_header_names(&self.exposed_response_headers, "exposed_response_headers")?;
+
+        Ok(PreparedHttpEndpoint {
+            parsed_url_chunks,
+            url_slot_names,
+            url_slot_set,
+            allowed_query_slots,
+            allowed_overrides,
+            exposed_response_allowlist,
+        })
+    }
+
     fn effective_request_body_type(&self) -> EndpointBodyType {
         self.request_body_type
             .clone()
             .unwrap_or(EndpointBodyType::Json)
     }
 
+    #[cfg(test)]
     fn build_headers(
         &self,
         default_content_type: Option<&str>,
         options: &EndpointCallOptions,
+    ) -> std::io::Result<HeaderMap> {
+        let prepared = self.prepare_runtime()?;
+        self.build_headers_prepared(default_content_type, options, &prepared)
+    }
+
+    fn build_headers_prepared(
+        &self,
+        default_content_type: Option<&str>,
+        options: &EndpointCallOptions,
+        prepared: &PreparedHttpEndpoint,
     ) -> std::io::Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         // Header precedence is explicit:
@@ -658,10 +725,6 @@ impl HttpEndpoint {
             headers.insert(name, value);
         }
 
-        let allowed_overrides = allowlisted_header_names(
-            &self.overridable_request_headers,
-            "overridable_request_headers",
-        )?;
         for (k, v) in &options.headers {
             let name = HeaderName::try_from(k.as_str()).map_err(|e| {
                 Error::new(
@@ -669,7 +732,7 @@ impl HttpEndpoint {
                     format!("invalid override header name `{k}`: {e}"),
                 )
             })?;
-            if !allowed_overrides.contains(&name) {
+            if !prepared.allowed_overrides.contains(&name) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!(
@@ -689,12 +752,19 @@ impl HttpEndpoint {
         Ok(headers)
     }
 
+    #[cfg(test)]
     fn build_url(&self, options: &EndpointCallOptions) -> std::io::Result<reqwest::Url> {
-        let (chunks, slot_names) = parse_url_template(&self.url_template)?;
-        let slot_set: HashSet<&str> = slot_names.iter().map(String::as_str).collect();
+        let prepared = self.prepare_runtime()?;
+        self.build_url_prepared(options, &prepared)
+    }
 
+    fn build_url_prepared(
+        &self,
+        options: &EndpointCallOptions,
+        prepared: &PreparedHttpEndpoint,
+    ) -> std::io::Result<reqwest::Url> {
         for provided in options.url_params.keys() {
-            if !slot_set.contains(provided.as_str()) {
+            if !prepared.url_slot_set.contains(provided) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!(
@@ -705,7 +775,7 @@ impl HttpEndpoint {
             }
         }
 
-        for slot in &slot_names {
+        for slot in &prepared.url_slot_names {
             if !self.url_param_specs.contains_key(slot) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
@@ -715,7 +785,7 @@ impl HttpEndpoint {
         }
 
         for configured in self.url_param_specs.keys() {
-            if !slot_set.contains(configured.as_str()) {
+            if !prepared.url_slot_set.contains(configured) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!(
@@ -726,16 +796,16 @@ impl HttpEndpoint {
         }
 
         let mut resolved_url = String::with_capacity(self.url_template.len().saturating_add(16));
-        for chunk in chunks {
+        for chunk in &prepared.parsed_url_chunks {
             match chunk {
-                UrlTemplateChunk::Literal(s) => resolved_url.push_str(&s),
+                UrlTemplateChunk::Literal(s) => resolved_url.push_str(s),
                 UrlTemplateChunk::Slot(slot) => {
-                    let spec = self.url_param_specs.get(&slot).ok_or(Error::new(
+                    let spec = self.url_param_specs.get(slot.as_str()).ok_or(Error::new(
                         ErrorKind::InvalidInput,
                         format!("missing url_param_specs entry for slot `{slot}`"),
                     ))?;
-                    let provided = options.url_params.get(&slot).map(String::as_str);
-                    let value = spec.resolve_value(&slot, provided)?;
+                    let provided = options.url_params.get(slot.as_str()).map(String::as_str);
+                    let value = spec.resolve_value(slot, provided)?;
                     resolved_url.push_str(&percent_encode_component(&value));
                 }
             }
@@ -755,9 +825,8 @@ impl HttpEndpoint {
             ));
         }
 
-        let allowed_query_slots = self.allowed_query_slots();
         for provided in options.queries.keys() {
-            if !allowed_query_slots.contains(provided.as_str()) {
+            if !prepared.allowed_query_slots.contains(provided) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
                     format!("unknown queries key `{provided}` for endpoint"),
@@ -809,25 +878,16 @@ impl HttpEndpoint {
         Ok(url)
     }
 
-    fn allowed_query_slots(&self) -> HashSet<&str> {
-        let mut slots = HashSet::new();
-        for spec in &self.query_specs {
-            if let QuerySpec::Slotted { slot, .. } = spec {
-                slots.insert(slot.as_str());
-            }
-        }
-        slots
-    }
-
     /// Sends the configured HTTP request and decodes response according to endpoint body policy.
     pub(crate) async fn execute(
         &self,
         client: Arc<dyn EndpointHttpClient>,
+        prepared: &PreparedHttpEndpoint,
         default_timeout_ms: Option<u64>,
         default_response_max_bytes: Option<usize>,
         options: &EndpointCallOptions,
     ) -> std::io::Result<EndpointResponse> {
-        let url = self.build_url(options)?;
+        let url = self.build_url_prepared(options, prepared)?;
         let timeout_ms = self.timeout_ms.or(default_timeout_ms);
         let response_max_bytes = self.response_max_bytes.or(default_response_max_bytes);
         let supports_body = self.method.supports_request_body();
@@ -844,7 +904,7 @@ impl HttpEndpoint {
                 None
             };
 
-        let headers = self.build_headers(default_content_type, options)?;
+        let headers = self.build_headers_prepared(default_content_type, options, prepared)?;
         let build_request = || -> std::io::Result<EndpointHttpRequest> {
             let body = if supports_body {
                 match (&request_body_type, &options.body) {
@@ -897,6 +957,7 @@ impl HttpEndpoint {
                 url: url.clone(),
                 headers: headers.clone(),
                 timeout_ms,
+                response_max_bytes,
                 body,
             })
         };
@@ -951,8 +1012,10 @@ impl HttpEndpoint {
             return Err(Error::other(format!("HTTP status {status_code}")));
         }
 
-        let response_headers =
-            extract_exposed_response_headers(&res.headers, &self.exposed_response_headers)?;
+        let response_headers = extract_exposed_response_headers_prepared(
+            &res.headers,
+            &prepared.exposed_response_allowlist,
+        )?;
 
         if let (Some(max), Some(content_len)) = (response_max_bytes, res.content_length)
             && content_len > max as u64
@@ -1028,14 +1091,22 @@ fn allowlisted_header_names(
         .collect()
 }
 
+#[cfg(test)]
 fn extract_exposed_response_headers(
     headers: &HeaderMap,
     allowlist: &[String],
 ) -> std::io::Result<HashMap<String, String>> {
     let allowlisted = allowlisted_header_names(allowlist, "exposed_response_headers")?;
+    extract_exposed_response_headers_prepared(headers, &allowlisted)
+}
+
+fn extract_exposed_response_headers_prepared(
+    headers: &HeaderMap,
+    allowlisted: &HashSet<HeaderName>,
+) -> std::io::Result<HashMap<String, String>> {
     let mut out = HashMap::new();
     for name in allowlisted {
-        let values = headers.get_all(&name);
+        let values = headers.get_all(name);
         let mut parts = Vec::new();
         for value in values {
             let text = value
@@ -1072,10 +1143,20 @@ fn extend_body_with_limit(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum UrlTemplateChunk {
     Literal(String),
     Slot(String),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedHttpEndpoint {
+    parsed_url_chunks: Vec<UrlTemplateChunk>,
+    url_slot_names: Vec<String>,
+    url_slot_set: HashSet<String>,
+    allowed_query_slots: HashSet<String>,
+    allowed_overrides: HashSet<HeaderName>,
+    exposed_response_allowlist: HashSet<HeaderName>,
 }
 
 fn parse_url_template(template: &str) -> std::io::Result<(Vec<UrlTemplateChunk>, Vec<String>)> {

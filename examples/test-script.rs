@@ -9,10 +9,7 @@ fn main() -> std::io::Result<()> {
         _ => {
             #[allow(clippy::get_first)]
             let bin_name = args.get(0).map(String::as_str).unwrap_or("test-script");
-            println!(
-                "Usage: {} <json_config_path> <js_path>",
-                bin_name
-            );
+            println!("Usage: {} <json_config_path> <js_path>", bin_name);
             return Ok(());
         }
     };

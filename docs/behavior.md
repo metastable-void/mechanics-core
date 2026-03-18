@@ -329,6 +329,7 @@ Response-size behavior:
 - Current implementation does not require caller-owned Tokio runtime state for these sync APIs; using them from `spawn_blocking` is supported.
 - Internally, workers host a Tokio current-thread runtime for Boa async jobs and endpoint transport futures.
 - Custom `EndpointHttpClient` implementations should treat Tokio availability inside worker execution as part of the runtime contract.
+- Design limitation (intentional): runtime footprint scales with `worker_count` because each worker owns its own runtime/executor state for isolation and fault containment.
 
 ### Shutdown
 Dropping `MechanicsPool`:

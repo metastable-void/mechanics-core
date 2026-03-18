@@ -152,6 +152,7 @@ fn synthetic_pool(
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(50),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     }
 }
 

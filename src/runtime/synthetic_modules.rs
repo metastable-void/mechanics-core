@@ -463,18 +463,14 @@ pub(super) fn install_synthetic_modules(loader: &Rc<CustomModuleLoader>, context
                     ))?
             };
             let endpoint_name = endpoint.to_std_string_lossy();
-            let endpoint =
-                state
-                    .config
-                    .endpoints
-                    .get(&endpoint_name)
-                    .ok_or(JsError::from_native(
-                        JsNativeError::typ().with_message("Endpoint not found"),
-                    ))?;
+            let (endpoint, prepared) = state.endpoint(&endpoint_name).ok_or(
+                JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")),
+            )?;
 
             let res = endpoint
                 .execute(
                     state.endpoint_http_client(),
+                    prepared,
                     state.default_timeout_ms(),
                     state.default_response_max_bytes(),
                     &req_options,

@@ -178,13 +178,13 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
 
     {
         let mut workers = shared.workers.write();
-        workers.insert(0, thread::spawn(|| {}));
-        workers.insert(1, thread::spawn(|| {}));
+        workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
+        workers.insert(1, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
     }
     loop {
         let all_finished = {
             let workers = shared.workers.read();
-            workers.values().all(thread::JoinHandle::is_finished)
+            workers.values().all(WorkerHandle::is_finished)
         };
         if all_finished {
             break;
@@ -197,6 +197,7 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(50),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let (done_tx, done_rx) = bounded::<()>(1);
@@ -234,16 +235,18 @@ fn stats_is_non_blocking_with_finished_worker_handles() {
 
     {
         let mut workers = shared.workers.write();
-        workers.insert(0, thread::spawn(|| {}));
+        workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
         workers.insert(
             1,
-            thread::spawn(|| thread::sleep(Duration::from_millis(50))),
+            WorkerHandle::from_join_for_test(thread::spawn(|| {
+                thread::sleep(Duration::from_millis(50))
+            })),
         );
     }
     loop {
         let finished = {
             let workers = shared.workers.read();
-            workers.get(&0).map(thread::JoinHandle::is_finished)
+            workers.get(&0).map(WorkerHandle::is_finished)
         };
         if finished == Some(true) {
             break;
@@ -261,6 +264,7 @@ fn stats_is_non_blocking_with_finished_worker_handles() {
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(50),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let (done_tx, done_rx) = bounded(1);
@@ -309,7 +313,7 @@ fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
     let blocker = thread::spawn(|| thread::sleep(Duration::from_millis(200)));
     {
         let mut workers = shared.workers.write();
-        workers.insert(0, blocker);
+        workers.insert(0, WorkerHandle::from_join_for_test(blocker));
     }
 
     let (reply_tx, _reply_rx) = bounded(1);
@@ -332,6 +336,7 @@ fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
         enqueue_timeout: Duration::from_millis(10),
         run_timeout: Duration::from_millis(50),
         supervisor: None,
+        supervisor_shutdown_tx: None,
     };
 
     let (done_tx, done_rx) = bounded::<()>(1);
@@ -393,8 +398,14 @@ fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
     assert!(!shared.restart_blocked.load(Ordering::Acquire));
 
     shared.closed.store(true, Ordering::Release);
+    {
+        let workers = shared.workers.read();
+        for handle in workers.values() {
+            let _ = handle.shutdown_tx.send(());
+        }
+    }
     let mut workers = shared.workers.write();
     for (_, handle) in workers.drain() {
-        let _ = handle.join();
+        let _ = handle.join.join();
     }
 }
