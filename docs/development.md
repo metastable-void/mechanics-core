@@ -59,6 +59,12 @@ Audit documentation routine (`docs/audit-findings.md`):
 - Keep resolved findings summarized concisely at the bottom under `Done summary`.
 - When a finding is resolved, move it to `Done summary` in the same change.
 
+Versioning policy for this repository state:
+- This repository is public and planned for crates.io publication once the implementation matures.
+- During pre-publication maturation, compatibility-breaking API changes are allowed when they improve correctness, safety, or maintainability.
+- Before crates.io publication, tighten compatibility guarantees and document migration guidance for any breaking surface changes.
+- Even when breaking Rust API compatibility, keep JSON-first serde parseability as a first-class feature unless a change explicitly redefines that contract.
+
 When changing runtime-facing behavior:
 - Keep `docs/behavior.md` aligned with actual behavior.
 - Keep `ts-types/*.d.ts` and `ts-types/README.md` policy expectations aligned for synthetic modules.

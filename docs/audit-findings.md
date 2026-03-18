@@ -34,8 +34,8 @@ Update this section on code additions.
   - Proposed direction:
   - Preserve JSON-first API as a hard requirement: `serde_json` deserialization into public config/job types must remain first-class and ergonomic.
   - Add validated constructors/builders for Rust-native construction paths, while keeping/describing serde-based validation as the primary JSON ingestion path.
-  - Keep direct field access temporarily (for compatibility), but move invariant checks into shared validation entrypoints used by both constructors and serde paths.
-  - If visibility tightening is introduced, do it in a staged/non-breaking manner and document migration steps.
+  - Move invariant checks into shared validation entrypoints used by both constructors and serde paths.
+  - This is a public pre-publication repository; compatibility-breaking visibility tightening is acceptable during maturation if it materially improves invariant safety, with migration/stabilization planned before crates.io release.
 
 - 24) Internal pool state structs expose wide `pub(crate)` field surfaces, increasing cross-module coupling
   - Severity: low

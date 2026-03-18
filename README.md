@@ -26,6 +26,8 @@ Public API re-exports are in `src/lib.rs`.
 - `MechanicsJob`, `MechanicsConfig`, `HttpEndpoint`, and related runtime-facing config types are intended to be first-class `serde_json` inputs.
 - Rust-side builder/constructor helpers should complement JSON ingestion, not replace it.
 - When tightening encapsulation/visibility, preserve non-breaking JSON parseability and keep validation behavior aligned between serde and Rust-native construction paths.
+- This repository is public and is intended for crates.io publication once implementation matures.
+- Until publication/stabilization, compatibility-breaking Rust API changes are acceptable when they improve API safety/clarity.
 
 ## Contributor quick start
 Prerequisites:
