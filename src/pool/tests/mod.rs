@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     EndpointBodyType, HttpEndpoint, HttpMethod, MechanicsConfig, QuerySpec, SlottedQueryMode,
-    UrlParamSpec,
+    UrlParamSpec, http::ReqwestEndpointHttpClient,
 };
 use serde_json::json;
 use std::io::{Read, Write};
@@ -142,7 +142,7 @@ fn synthetic_pool(
         execution_limits,
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });

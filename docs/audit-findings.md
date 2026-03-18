@@ -46,3 +46,4 @@ Update this section on code additions.
 - 14) Public pool stats API missing: fixed with synchronous non-blocking `MechanicsPool::stats()` returning `MechanicsPoolStats` (worker/queue/restart snapshot) and non-blocking behavior test.
 - 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).
 - 16) Orchestration-primitives gap reframed and addressed: generalized orchestration module deemed unnecessary for this crate scope; added focused `mechanics:uuid` utility module (`v3`/`v4`/`v5`/`v6`/`v7`/`nil`/`max`) with docs/types/tests.
+- 17) Endpoint transport was fixed to reqwest internals: fixed with pool-level pluggable transport (`EndpointHttpClient`) plus default `ReqwestEndpointHttpClient`, including deterministic injected-client test coverage and docs.

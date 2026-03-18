@@ -171,7 +171,7 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });
@@ -227,7 +227,7 @@ fn stats_is_non_blocking_with_finished_worker_handles() {
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });
@@ -301,7 +301,7 @@ fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });
@@ -373,7 +373,7 @@ fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });

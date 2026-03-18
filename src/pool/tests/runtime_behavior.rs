@@ -1,4 +1,11 @@
 use super::*;
+use crate::{
+    EndpointHttpClient, EndpointHttpRequest, EndpointHttpRequestBody, EndpointHttpResponse,
+};
+use reqwest::header::{HeaderMap, HeaderValue};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn run_simple_module_returns_value() {
@@ -218,6 +225,82 @@ fn oversized_execution_timeout_is_reported_as_execution_error() {
         }
         other => panic!("unexpected error kind: {other}"),
     }
+}
+
+#[derive(Debug)]
+struct MockEndpointHttpClient {
+    call_count: Arc<AtomicUsize>,
+}
+
+impl EndpointHttpClient for MockEndpointHttpClient {
+    fn execute(
+        &self,
+        request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        self.call_count.fetch_add(1, Ordering::Relaxed);
+        Box::pin(async move {
+            if request.method != HttpMethod::Get {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "expected GET method in mock client",
+                ));
+            }
+            if request.url.as_str() != "https://mock.local/ping" {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "unexpected URL in mock client",
+                ));
+            }
+            if !matches!(request.body, EndpointHttpRequestBody::Absent) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "mock client expected no request body",
+                ));
+            }
+            let mut headers = HeaderMap::new();
+            headers.insert("x-trace-id", HeaderValue::from_static("trace-123"));
+            Ok(EndpointHttpResponse {
+                status: 200,
+                headers,
+                content_length: Some(30),
+                body: br#"{"ok":true,"source":"mock"}"#.to_vec(),
+            })
+        })
+    }
+}
+
+#[test]
+fn pool_uses_injected_endpoint_http_client() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        endpoint_http_client: Some(Arc::new(MockEndpointHttpClient {
+            call_count: Arc::clone(&calls),
+        })),
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let endpoint = HttpEndpoint::new(HttpMethod::Get, "https://mock.local/ping", HashMap::new())
+        .with_exposed_response_headers(vec!["x-trace-id".to_owned()]);
+    let job = make_job(
+        r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                return await endpoint("mock", {});
+            }
+        "#,
+        endpoint_config("mock", endpoint),
+        Value::Null,
+    );
+
+    let value = pool.run(job).expect("run endpoint with injected client");
+    assert_eq!(value["status"], json!(200));
+    assert_eq!(value["ok"], json!(true));
+    assert_eq!(value["body"]["ok"], json!(true));
+    assert_eq!(value["body"]["source"], json!("mock"));
+    assert_eq!(value["headers"]["x-trace-id"], json!("trace-123"));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
 
 #[test]

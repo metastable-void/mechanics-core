@@ -42,7 +42,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });
@@ -128,7 +128,7 @@ fn run_reports_enqueue_timeout_without_network_dependencies() {
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });
@@ -186,7 +186,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnec
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });
@@ -231,7 +231,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_cha
         execution_limits: MechanicsExecutionLimits::default(),
         default_http_timeout_ms: None,
         default_http_response_max_bytes: None,
-        reqwest_client: reqwest::Client::new(),
+        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         #[cfg(test)]
         force_worker_runtime_init_failure: false,
     });

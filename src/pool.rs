@@ -1,6 +1,6 @@
 use crate::{
     error::MechanicsError,
-    http::into_io_error,
+    http::{EndpointHttpClient, ReqwestEndpointHttpClient, into_io_error},
     job::{MechanicsExecutionLimits, MechanicsJob},
     runtime::RuntimeInternal,
 };
@@ -49,6 +49,11 @@ pub struct MechanicsPoolConfig {
     pub restart_window: Duration,
     /// Maximum automatic worker restarts allowed within `restart_window`.
     pub max_restarts_in_window: usize,
+    /// Pool-level endpoint transport used by `mechanics:endpoint` executions.
+    ///
+    /// If `None`, the pool constructs a default reqwest-backed client.
+    /// This is Rust-side runtime wiring and is intentionally not part of JSON job config.
+    pub endpoint_http_client: Option<Arc<dyn EndpointHttpClient>>,
     /// Test-only hook to force worker runtime init failures during pool creation.
     #[cfg(test)]
     force_worker_runtime_init_failure: bool,
@@ -69,6 +74,7 @@ impl Default for MechanicsPoolConfig {
             default_http_response_max_bytes: Some(8 * 1024 * 1024),
             restart_window: Duration::from_secs(10),
             max_restarts_in_window: 16,
+            endpoint_http_client: None,
             #[cfg(test)]
             force_worker_runtime_init_failure: false,
         }
@@ -140,7 +146,7 @@ struct MechanicsPoolShared {
     execution_limits: MechanicsExecutionLimits,
     default_http_timeout_ms: Option<u64>,
     default_http_response_max_bytes: Option<usize>,
-    reqwest_client: reqwest::Client,
+    endpoint_http_client: Arc<dyn EndpointHttpClient>,
     #[cfg(test)]
     force_worker_runtime_init_failure: bool,
 }
@@ -196,7 +202,7 @@ impl MechanicsPoolShared {
         let exit_tx = shared.exit_tx.clone();
         let shared_for_worker = Arc::clone(shared);
         let (ready_tx, ready_rx) = bounded::<Result<(), MechanicsError>>(1);
-        let reqwest_client = shared.reqwest_client.clone();
+        let endpoint_http_client = Arc::clone(&shared.endpoint_http_client);
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
         let default_http_response_max_bytes = shared.default_http_response_max_bytes;
@@ -215,7 +221,9 @@ impl MechanicsPoolShared {
                         return;
                     }
 
-                    let mut runtime = match RuntimeInternal::new_with_client(reqwest_client) {
+                    let mut runtime = match RuntimeInternal::new_with_endpoint_http_client(
+                        endpoint_http_client,
+                    ) {
                         Ok(runtime) => {
                             let _ = ready_tx.send(Ok(()));
                             runtime
@@ -453,10 +461,15 @@ impl MechanicsPool {
             ));
         }
 
-        let reqwest_client = reqwest::Client::builder()
-            .build()
-            .map_err(into_io_error)
-            .map_err(|e| MechanicsError::runtime_pool(e.to_string()))?;
+        let endpoint_http_client = if let Some(client) = config.endpoint_http_client.clone() {
+            client
+        } else {
+            let reqwest_client = reqwest::Client::builder()
+                .build()
+                .map_err(into_io_error)
+                .map_err(|e| MechanicsError::runtime_pool(e.to_string()))?;
+            Arc::new(ReqwestEndpointHttpClient::new(reqwest_client))
+        };
 
         let (tx, rx) = bounded(config.queue_capacity);
         let (exit_tx, exit_rx) = unbounded::<WorkerExit>();
@@ -478,7 +491,7 @@ impl MechanicsPool {
             execution_limits: config.execution_limits,
             default_http_timeout_ms: config.default_http_timeout_ms,
             default_http_response_max_bytes: config.default_http_response_max_bytes,
-            reqwest_client,
+            endpoint_http_client,
             #[cfg(test)]
             force_worker_runtime_init_failure: config.force_worker_runtime_init_failure,
         });

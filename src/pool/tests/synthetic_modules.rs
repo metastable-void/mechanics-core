@@ -355,9 +355,7 @@ fn uuid_module_rejects_missing_v5_options() {
         MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
-    let err = pool
-        .run(job)
-        .expect_err("missing v5 options should fail");
+    let err = pool.run(job).expect_err("missing v5 options should fail");
     match err {
         MechanicsError::Execution(msg) => {
             assert!(msg.contains("options"));

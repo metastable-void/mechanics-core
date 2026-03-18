@@ -10,6 +10,7 @@ across jobs.
 ## What this crate provides
 - Bounded worker pool (`MechanicsPool`) for job execution.
 - Synchronous non-blocking pool state snapshots (`MechanicsPool::stats`, `MechanicsPoolStats`).
+- Swappable pool-level endpoint HTTP transport via `MechanicsPoolConfig.endpoint_http_client` (`reqwest` wrapper by default), useful for deterministic/mock testing.
 - Per-job execution limits (`MechanicsExecutionLimits`).
 - Synthetic JS modules:
   `mechanics:endpoint` for preconfigured HTTP calls (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`),

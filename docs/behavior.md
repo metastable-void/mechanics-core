@@ -11,24 +11,26 @@ The crate API is exported from `src/lib.rs`:
 - `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`
 - `MechanicsJob`, `MechanicsExecutionLimits`
 - `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`
+- `EndpointHttpClient`, `ReqwestEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`
 - `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
 - `MechanicsError`
 
 ## High-level model
 1. You build a `MechanicsPool`.
-2. You submit a `MechanicsJob` containing:
+2. Pool config optionally provides a Rust-side endpoint transport (`endpoint_http_client`) or uses the default reqwest-backed transport.
+3. You submit a `MechanicsJob` containing:
 - module source (`mod_source`),
 - JSON argument (`arg`),
 - endpoint config (`config`).
-3. If a `MechanicsJob` is deserialized from JSON, `mod_source` must be non-empty.
-4. `MechanicsConfig` validation is fail-fast:
+4. If a `MechanicsJob` is deserialized from JSON, `mod_source` must be non-empty.
+5. `MechanicsConfig` validation is fail-fast:
 - `MechanicsConfig::new(...)` validates endpoint configuration before returning.
 - `serde` deserialization into `MechanicsConfig` also validates and fails on invalid endpoint config.
-5. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
-6. Each job executes inside a fresh JavaScript Realm within that runtime context.
-7. Global mutations (for example `globalThis.foo = ...`) do not persist to later jobs.
-8. The module default export is invoked with one argument.
-9. Result is converted to JSON and returned.
+6. A worker creates/uses a runtime (`RuntimeInternal`) and executes the module.
+7. Each job executes inside a fresh JavaScript Realm within that runtime context.
+8. Global mutations (for example `globalThis.foo = ...`) do not persist to later jobs.
+9. The module default export is invoked with one argument.
+10. Result is converted to JSON and returned.
 
 ## JavaScript contract
 Your module should export a callable default export.
@@ -71,6 +73,7 @@ Resolution behavior:
 - `name` must match a key in `MechanicsConfig.endpoints`.
 - Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
 - Endpoint config can optionally include resilience policy (`retry_policy`) for retries/backoff/rate-limit handling.
+- Endpoint transport implementation is selected at pool construction (`MechanicsPoolConfig.endpoint_http_client`) and is not JSON-configurable from jobs.
 - URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
 - URL template must not contain query string or fragment; use `query_specs` for query output.
 - Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
@@ -295,6 +298,7 @@ Response-size behavior:
 - bounded job queue (`queue_capacity`),
 - N worker threads (`worker_count`),
 - supervisor thread with restart rate limiter (`restart_window`, `max_restarts_in_window`).
+- endpoint transport from `config.endpoint_http_client` (or default reqwest-backed transport when `None`).
 - If any worker fails during startup runtime initialization, construction fails with `MechanicsError::RuntimePool` (no partial usable pool is returned).
 - `run_timeout` is validated at construction and rejected if the platform clock cannot represent `Instant::now() + run_timeout`.
 

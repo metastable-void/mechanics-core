@@ -63,6 +63,7 @@ When changing runtime-facing behavior:
 - Keep `docs/behavior.md` aligned with actual behavior.
 - Keep `ts-types/*.d.ts` and `ts-types/README.md` policy expectations aligned for synthetic modules.
 - Keep examples in docs valid against current API names (`run_try_enqueue`, `stats`, `MechanicsConfig::new`, endpoint body-type fields, timeout/response-limit fields, and `retry_policy`).
+- Keep the boundary explicit: endpoint transport injection (`MechanicsPoolConfig.endpoint_http_client`) is a Rust-side pool config concern, not a JSON job config field.
 - If upgrading `boa_engine`, update `src/executor.rs` job routing and keep `job_routing_harness_covers_all_current_boa_job_variants` passing with explicit coverage for any newly constructible job variants.
 
 When changing config validation or endpoint behavior:

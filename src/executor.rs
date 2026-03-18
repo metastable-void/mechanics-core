@@ -357,7 +357,15 @@ mod tests {
 
         assert_eq!(queue.promise_jobs.borrow().len(), 1);
         assert_eq!(queue.async_jobs.borrow().len(), 1);
-        assert_eq!(queue.timeout_jobs.borrow().values().map(Vec::len).sum::<usize>(), 1);
+        assert_eq!(
+            queue
+                .timeout_jobs
+                .borrow()
+                .values()
+                .map(Vec::len)
+                .sum::<usize>(),
+            1
+        );
         assert_eq!(queue.generic_jobs.borrow().len(), 1);
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
     error::MechanicsError,
     executor::{CustomModuleLoader, Queue},
-    http::MechanicsConfig,
+    http::{EndpointHttpClient, MechanicsConfig},
     job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
@@ -60,9 +60,10 @@ pub(crate) struct MechanicsState {
     #[unsafe_ignore_trace]
     pub(crate) config: Arc<MechanicsConfig>,
 
-    // SAFETY: `reqwest::Client` is an external Rust type with no references into Boa's GC heap.
+    // SAFETY: `Arc<dyn EndpointHttpClient>` is Rust-owned transport state with no references into
+    // Boa's GC heap.
     #[unsafe_ignore_trace]
-    reqwest_client: reqwest::Client,
+    endpoint_http_client: Arc<dyn EndpointHttpClient>,
 
     // SAFETY: Primitive scalar copied into runtime config; not a GC-managed value.
     #[unsafe_ignore_trace]
@@ -76,20 +77,20 @@ pub(crate) struct MechanicsState {
 impl MechanicsState {
     pub(crate) fn new(
         config: Arc<MechanicsConfig>,
-        client: reqwest::Client,
+        endpoint_http_client: Arc<dyn EndpointHttpClient>,
         default_timeout_ms: Option<u64>,
         default_response_max_bytes: Option<usize>,
     ) -> Self {
         Self {
             config,
-            reqwest_client: client,
+            endpoint_http_client,
             default_timeout_ms,
             default_response_max_bytes,
         }
     }
 
-    pub(crate) fn reqwest(&self) -> reqwest::Client {
-        self.reqwest_client.clone()
+    pub(crate) fn endpoint_http_client(&self) -> Arc<dyn EndpointHttpClient> {
+        Arc::clone(&self.endpoint_http_client)
     }
 
     pub(crate) fn default_timeout_ms(&self) -> Option<u64> {
@@ -105,7 +106,7 @@ impl MechanicsState {
 pub(crate) struct RuntimeInternal {
     ctx: Context,
     loader: Rc<CustomModuleLoader>,
-    reqwest_client: reqwest::Client,
+    endpoint_http_client: Arc<dyn EndpointHttpClient>,
     queue: Rc<Queue>,
     hooks: Rc<RuntimeHostHooks>,
     execution_limits: MechanicsExecutionLimits,
@@ -136,7 +137,9 @@ impl RuntimeInternal {
     }
 
     /// Builds a Boa context, injects runtime state, and exposes runtime synthetic modules.
-    pub(crate) fn new_with_client(reqwest_client: reqwest::Client) -> Result<Self, MechanicsError> {
+    pub(crate) fn new_with_endpoint_http_client(
+        endpoint_http_client: Arc<dyn EndpointHttpClient>,
+    ) -> Result<Self, MechanicsError> {
         let queue = Rc::new(Queue::new().map_err(|e| {
             MechanicsError::runtime_pool(format!("failed to initialize async job runtime: {e}"))
         })?);
@@ -159,7 +162,7 @@ impl RuntimeInternal {
         Ok(Self {
             ctx: context,
             loader,
-            reqwest_client,
+            endpoint_http_client,
             queue,
             hooks,
             execution_limits: MechanicsExecutionLimits::default(),
@@ -188,7 +191,7 @@ impl RuntimeInternal {
         self.hooks.clear();
         let state = MechanicsState::new(
             config,
-            self.reqwest_client.clone(),
+            Arc::clone(&self.endpoint_http_client),
             self.default_endpoint_timeout_ms,
             self.default_endpoint_response_max_bytes,
         );

@@ -20,8 +20,9 @@ mod runtime;
 
 pub use error::MechanicsError;
 pub use http::{
-    EndpointBodyType, EndpointRetryPolicy, HttpEndpoint, HttpMethod, MechanicsConfig, QuerySpec,
-    SlottedQueryMode, UrlParamSpec,
+    EndpointBodyType, EndpointHttpClient, EndpointHttpRequest, EndpointHttpRequestBody,
+    EndpointHttpResponse, EndpointRetryPolicy, HttpEndpoint, HttpMethod, MechanicsConfig,
+    QuerySpec, ReqwestEndpointHttpClient, SlottedQueryMode, UrlParamSpec,
 };
 pub use job::{MechanicsExecutionLimits, MechanicsJob};
 pub use pool::{MechanicsPool, MechanicsPoolConfig, MechanicsPoolStats};

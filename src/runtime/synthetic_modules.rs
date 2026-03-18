@@ -336,10 +336,7 @@ fn parse_uuid_variant(args: &[JsValue], index: usize) -> JsResult<&'static str> 
     }
 }
 
-fn parse_uuid_v3_v5_options(
-    args: &[JsValue],
-    context: &mut Context,
-) -> JsResult<(Uuid, Vec<u8>)> {
+fn parse_uuid_v3_v5_options(args: &[JsValue], context: &mut Context) -> JsResult<(Uuid, Vec<u8>)> {
     let value = args.get_or_undefined(1);
     let Some(options) = value.as_object() else {
         return Err(buffer_like::js_type_error(
@@ -388,7 +385,9 @@ fn uuid_generate(_this: &JsValue, args: &[JsValue], context: &mut Context) -> Js
         "max" => Uuid::max(),
         _ => return Err(buffer_like::js_type_error("invalid UUID variant")),
     };
-    Ok(buffer_like::js_string_value(&value.hyphenated().to_string()))
+    Ok(buffer_like::js_string_value(
+        &value.hyphenated().to_string(),
+    ))
 }
 
 struct CodecModuleSpec {
@@ -475,7 +474,7 @@ pub(super) fn install_synthetic_modules(loader: &Rc<CustomModuleLoader>, context
 
             let res = endpoint
                 .execute(
-                    state.reqwest(),
+                    state.endpoint_http_client(),
                     state.default_timeout_ms(),
                     state.default_response_max_bytes(),
                     &req_options,
@@ -574,10 +573,11 @@ pub(super) fn install_synthetic_modules(loader: &Rc<CustomModuleLoader>, context
     );
     loader.define_module(js_string!("mechanics:rand"), rand_module);
 
-    let uuid = FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(uuid_generate))
-        .length(2)
-        .name("uuid")
-        .build();
+    let uuid =
+        FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(uuid_generate))
+            .length(2)
+            .name("uuid")
+            .build();
     let uuid_module = Module::synthetic(
         &[js_string!("default")],
         SyntheticModuleInitializer::from_copy_closure_with_captures(

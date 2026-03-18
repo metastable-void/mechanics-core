@@ -6,7 +6,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     io::{Error, ErrorKind},
+    pin::Pin,
+    sync::Arc,
     time::Duration,
 };
 
@@ -62,6 +65,103 @@ impl HttpMethod {
 
     fn supports_request_body(&self) -> bool {
         matches!(self, Self::Post | Self::Put | Self::Patch)
+    }
+}
+
+/// Request payload used by pluggable endpoint HTTP clients.
+#[derive(Clone, Debug)]
+pub enum EndpointHttpRequestBody {
+    Absent,
+    Json(Value),
+    Utf8(String),
+    Bytes(Vec<u8>),
+}
+
+/// Transport request shape used by pluggable endpoint HTTP clients.
+#[derive(Clone, Debug)]
+pub struct EndpointHttpRequest {
+    pub method: HttpMethod,
+    pub url: reqwest::Url,
+    pub headers: HeaderMap,
+    pub timeout_ms: Option<u64>,
+    pub body: EndpointHttpRequestBody,
+}
+
+/// Transport response shape used by pluggable endpoint HTTP clients.
+#[derive(Debug)]
+pub struct EndpointHttpResponse {
+    pub status: u16,
+    pub headers: HeaderMap,
+    pub content_length: Option<u64>,
+    pub body: Vec<u8>,
+}
+
+/// Endpoint HTTP client abstraction configured at pool level.
+pub trait EndpointHttpClient: Send + Sync + std::fmt::Debug {
+    fn execute(
+        &self,
+        request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>>;
+}
+
+/// Default endpoint HTTP client backed by `reqwest`.
+#[derive(Clone, Debug)]
+pub struct ReqwestEndpointHttpClient {
+    client: reqwest::Client,
+}
+
+impl ReqwestEndpointHttpClient {
+    pub fn new(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+}
+
+impl EndpointHttpClient for ReqwestEndpointHttpClient {
+    fn execute(
+        &self,
+        request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        let client = self.client.clone();
+        Box::pin(async move {
+            let mut req = client
+                .request(request.method.as_reqwest_method(), request.url)
+                .headers(request.headers);
+
+            if let Some(timeout_ms) = request.timeout_ms {
+                req = req.timeout(Duration::from_millis(timeout_ms));
+            }
+
+            match request.body {
+                EndpointHttpRequestBody::Absent => {}
+                EndpointHttpRequestBody::Json(v) => {
+                    req = req.json(&v);
+                }
+                EndpointHttpRequestBody::Utf8(s) => {
+                    req = req.body(s);
+                }
+                EndpointHttpRequestBody::Bytes(bytes) => {
+                    req = req.body(bytes);
+                }
+            }
+
+            let res = req.send().await.map_err(|err| {
+                if err.is_timeout() {
+                    Error::new(ErrorKind::TimedOut, err)
+                } else {
+                    into_io_error(err)
+                }
+            })?;
+            let status = res.status().as_u16();
+            let content_length = res.content_length();
+            let headers = res.headers().clone();
+            let body = res.bytes().await.map_err(into_io_error)?.to_vec();
+            Ok(EndpointHttpResponse {
+                status,
+                headers,
+                content_length,
+                body,
+            })
+        })
     }
 }
 
@@ -155,8 +255,8 @@ impl EndpointRetryPolicy {
         self.retry_on_status.contains(&status)
     }
 
-    fn should_retry_transport_error(&self, err: &reqwest::Error) -> bool {
-        if err.is_timeout() {
+    fn should_retry_transport_error(&self, err: &std::io::Error) -> bool {
+        if err.kind() == ErrorKind::TimedOut {
             return self.retry_on_timeout;
         }
         self.retry_on_io_errors
@@ -716,7 +816,7 @@ impl HttpEndpoint {
     /// Sends the configured HTTP request and decodes response according to endpoint body policy.
     pub(crate) async fn execute(
         &self,
-        client: reqwest::Client,
+        client: Arc<dyn EndpointHttpClient>,
         default_timeout_ms: Option<u64>,
         default_response_max_bytes: Option<usize>,
         options: &EndpointCallOptions,
@@ -739,23 +839,15 @@ impl HttpEndpoint {
             };
 
         let headers = self.build_headers(default_content_type, options)?;
-        let build_request = || -> std::io::Result<reqwest::RequestBuilder> {
-            let mut req = client
-                .request(self.method.as_reqwest_method(), url.clone())
-                .headers(headers.clone());
-
-            if let Some(timeout_ms) = timeout_ms {
-                req = req.timeout(Duration::from_millis(timeout_ms));
-            }
-
-            if supports_body {
+        let build_request = || -> std::io::Result<EndpointHttpRequest> {
+            let body = if supports_body {
                 match (&request_body_type, &options.body) {
-                    (_, EndpointCallBody::Absent) => {}
+                    (_, EndpointCallBody::Absent) => EndpointHttpRequestBody::Absent,
                     (EndpointBodyType::Json, EndpointCallBody::Json(v)) => {
-                        req = req.json(v);
+                        EndpointHttpRequestBody::Json(v.clone())
                     }
                     (EndpointBodyType::Json, EndpointCallBody::Utf8(s)) => {
-                        req = req.json(s);
+                        EndpointHttpRequestBody::Json(Value::String(s.clone()))
                     }
                     (EndpointBodyType::Json, EndpointCallBody::Bytes(_)) => {
                         return Err(Error::new(
@@ -764,7 +856,7 @@ impl HttpEndpoint {
                         ));
                     }
                     (EndpointBodyType::Utf8, EndpointCallBody::Utf8(s)) => {
-                        req = req.body(s.clone());
+                        EndpointHttpRequestBody::Utf8(s.clone())
                     }
                     (EndpointBodyType::Utf8, _) => {
                         return Err(Error::new(
@@ -773,7 +865,7 @@ impl HttpEndpoint {
                         ));
                     }
                     (EndpointBodyType::Bytes, EndpointCallBody::Bytes(bytes)) => {
-                        req = req.body(bytes.clone());
+                        EndpointHttpRequestBody::Bytes(bytes.clone())
                     }
                     (EndpointBodyType::Bytes, _) => {
                         return Err(Error::new(
@@ -790,84 +882,73 @@ impl HttpEndpoint {
                         self.method.as_str()
                     ),
                 ));
-            }
+            } else {
+                EndpointHttpRequestBody::Absent
+            };
 
-            Ok(req)
+            Ok(EndpointHttpRequest {
+                method: self.method.clone(),
+                url: url.clone(),
+                headers: headers.clone(),
+                timeout_ms,
+                body,
+            })
         };
 
         let max_attempts = self.retry_policy.max_attempts;
-        let (res, status_code, ok) = {
-            let mut final_response = None;
-            let mut final_status = 0u16;
-            let mut final_ok = false;
-
-            for attempt in 1..=max_attempts {
-                let req = build_request()?;
-                match req.send().await {
-                    Ok(res) => {
-                        let status = res.status();
-                        let status_code = status.as_u16();
-                        let ok = status.is_success();
-
-                        let should_retry_status = attempt < max_attempts
-                            && self.retry_policy.should_retry_status(status_code);
-                        if should_retry_status {
-                            let delay = self.retry_policy.retry_delay_for_status(
-                                status_code,
-                                res.headers(),
-                                attempt,
-                            );
-                            if !delay.is_zero() {
-                                tokio::time::sleep(delay).await;
-                            }
-                            continue;
+        let mut final_response = None;
+        for attempt in 1..=max_attempts {
+            let req = build_request()?;
+            match client.execute(req).await {
+                Ok(res) => {
+                    let status_code = res.status;
+                    let should_retry_status = attempt < max_attempts
+                        && self.retry_policy.should_retry_status(status_code);
+                    if should_retry_status {
+                        let delay = self.retry_policy.retry_delay_for_status(
+                            status_code,
+                            &res.headers,
+                            attempt,
+                        );
+                        if !delay.is_zero() {
+                            tokio::time::sleep(delay).await;
                         }
-
-                        if !self.allow_non_success_status && !ok {
-                            return match res.error_for_status() {
-                                Ok(_) => Err(Error::other(
-                                    "expected non-success status to produce an error",
-                                )),
-                                Err(err) => Err(into_io_error(err)),
-                            };
-                        }
-
-                        final_status = status_code;
-                        final_ok = ok;
-                        final_response = Some(res);
-                        break;
+                        continue;
                     }
-                    Err(err) => {
-                        if attempt < max_attempts
-                            && self.retry_policy.should_retry_transport_error(&err)
-                        {
-                            let delay = self.retry_policy.retry_delay_for_transport(attempt);
-                            if !delay.is_zero() {
-                                tokio::time::sleep(delay).await;
-                            }
-                            continue;
+                    final_response = Some(res);
+                    break;
+                }
+                Err(err) => {
+                    if attempt < max_attempts
+                        && self.retry_policy.should_retry_transport_error(&err)
+                    {
+                        let delay = self.retry_policy.retry_delay_for_transport(attempt);
+                        if !delay.is_zero() {
+                            tokio::time::sleep(delay).await;
                         }
-                        return Err(into_io_error(err));
+                        continue;
                     }
+                    return Err(err);
                 }
             }
+        }
 
-            let Some(res) = final_response else {
-                return Err(Error::other(
-                    "endpoint request attempts exhausted without terminal response",
-                ));
-            };
-            let res = if self.allow_non_success_status {
-                res
-            } else {
-                res.error_for_status().map_err(into_io_error)?
-            };
-            (res, final_status, final_ok)
+        let Some(res) = final_response else {
+            return Err(Error::other(
+                "endpoint request attempts exhausted without terminal response",
+            ));
         };
-        let response_headers =
-            extract_exposed_response_headers(res.headers(), &self.exposed_response_headers)?;
 
-        if let (Some(max), Some(content_len)) = (response_max_bytes, res.content_length())
+        let status_code = res.status;
+        let ok = (200..=299).contains(&status_code);
+        if !self.allow_non_success_status && !ok {
+            return Err(Error::other(format!("HTTP status {status_code}")));
+        }
+
+        let response_headers =
+            extract_exposed_response_headers(&res.headers, &self.exposed_response_headers)?;
+
+        if let (Some(max), Some(content_len)) = (response_max_bytes, res.content_length)
             && content_len > max as u64
         {
             return Err(Error::new(
@@ -879,10 +960,7 @@ impl HttpEndpoint {
         }
 
         let mut bytes = Vec::new();
-        let mut res = res;
-        while let Some(chunk) = res.chunk().await.map_err(into_io_error)? {
-            extend_body_with_limit(&mut bytes, &chunk, response_max_bytes)?;
-        }
+        extend_body_with_limit(&mut bytes, &res.body, response_max_bytes)?;
         if bytes.is_empty() {
             return Ok(EndpointResponse {
                 body: EndpointResponseBody::Empty,
