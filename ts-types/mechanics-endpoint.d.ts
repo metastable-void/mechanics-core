@@ -54,6 +54,10 @@ declare module "mechanics:endpoint" {
      * Allowlisted headers that are not present in the response are omitted.
      */
     headers: Record<string, string>;
+    /** HTTP status code returned by the endpoint call. */
+    status: number;
+    /** Convenience success flag (`true` for 2xx status codes). */
+    ok: boolean;
   }
 
   /**

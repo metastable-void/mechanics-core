@@ -107,6 +107,8 @@ fn endpoint_specific_timeout_overrides_pool_default() {
         .run(job)
         .expect("endpoint-level timeout should allow success");
     assert_eq!(value["body"]["ok"], json!(true));
+    assert_eq!(value["status"], json!(200));
+    assert_eq!(value["ok"], json!(true));
 
     let _ = server.join();
 }
@@ -253,6 +255,8 @@ fn endpoint_non_success_status_can_be_allowed() {
         .run(job)
         .expect("opt-in should allow JSON parse on non-success status");
     assert_eq!(value["body"]["ok"], json!(false));
+    assert_eq!(value["status"], json!(500));
+    assert_eq!(value["ok"], json!(false));
 
     let _ = server.join();
 }

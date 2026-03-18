@@ -135,6 +135,13 @@ fn endpoint_response_to_js_value(
     let object = JsObject::default(context.intrinsics());
     object.set(js_string!("body"), body, true, context)?;
     object.set(js_string!("headers"), headers, true, context)?;
+    object.set(
+        js_string!("status"),
+        JsValue::new(i32::from(response.status)),
+        true,
+        context,
+    )?;
+    object.set(js_string!("ok"), JsValue::new(response.ok), true, context)?;
     Ok(object.into())
 }
 
@@ -488,4 +495,34 @@ pub(super) fn install_synthetic_modules(loader: &Rc<CustomModuleLoader>, context
         context,
     );
     loader.define_module(js_string!("mechanics:rand"), rand_module);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn endpoint_response_to_js_value_includes_status_and_ok() {
+        let mut context = Context::default();
+        let mut headers = HashMap::new();
+        headers.insert("x-trace-id".to_owned(), "abc".to_owned());
+        let response = EndpointResponse {
+            body: EndpointResponseBody::Json(json!({"n": 1})),
+            headers,
+            status: 202,
+            ok: false,
+        };
+
+        let value =
+            endpoint_response_to_js_value(response, &mut context).expect("convert response");
+        let as_json = value
+            .to_json(&mut context)
+            .expect("json conversion should succeed")
+            .expect("converted response should be JSON object");
+        assert_eq!(as_json["status"], json!(202));
+        assert_eq!(as_json["ok"], json!(false));
+        assert_eq!(as_json["body"]["n"], json!(1));
+        assert_eq!(as_json["headers"]["x-trace-id"], json!("abc"));
+    }
 }

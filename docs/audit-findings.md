@@ -201,3 +201,97 @@ This report supersedes the previous content of this file. Prior versions are arc
 - keep `cargo clippy --all-targets --all-features -- -D warnings` as the required gate,
 - keep a library-focused hardening pass (`--lib` + panic/unwrap/todo/unimplemented/dbg lints) in CI or periodic audits,
 - run maximal profile periodically (for example weekly) as non-gating audit telemetry.
+
+## Feature-gap exploration for automation/LLM orchestration (2026-03-18)
+
+### 10) Async Rust API intentionally omitted; async interop docs were missing
+- Severity: low
+- Category: documentation gap
+- Status: done (2026-03-18)
+- Evidence:
+- Public pool API intentionally exposes synchronous calls only: `run` and `run_try_enqueue` (`src/pool.rs:486`, `src/pool.rs:565`).
+- Crate docs did not explicitly state that this is intentional to avoid assuming Tokio, or provide recommended async-runtime integration guidance.
+- Resolution:
+- Updated `docs/behavior.md` to document:
+- synchronous API is intentional,
+- synchronous methods should run under `tokio::task::spawn_blocking(...)` when called from Tokio async code,
+- current sync API does not require caller-owned Tokio runtime state.
+- Verification:
+- Added deterministic test: `src/pool/tests/runtime_behavior.rs` (`pool_run_inside_tokio_spawn_blocking_succeeds`).
+
+### 11) Endpoint response contract lacks status/metadata needed for agent policies
+- Severity: medium
+- Category: missing capability (protocol surface)
+- Status: done (2026-03-18)
+- Evidence:
+- Endpoint return object did not include HTTP status metadata.
+- Impact:
+- Agent workflows cannot branch on HTTP status code, response size, or latency unless they infer from parse errors.
+- Resolution:
+- Added `status` and `ok` to runtime endpoint response payloads:
+- Rust response model now carries `status`/`ok` alongside body/headers.
+- JS `mechanics:endpoint` response object now includes `{ body, headers, status, ok }`.
+- Updated docs and TypeScript declarations accordingly.
+- Verification:
+- Updated endpoint network tests to assert `status`/`ok` values for both success and allowed non-2xx responses.
+
+### 12) HTTP resilience policies are not first-class (retry/backoff/rate-limit)
+- Severity: medium
+- Category: missing capability (reliability)
+- Status: open
+- Evidence:
+- Endpoint config currently has timeout/size/status policy, but no retry/backoff/circuit-breaker controls (`src/http.rs:151` to `src/http.rs:170`, `src/http.rs:574` to `src/http.rs:701`).
+- Impact:
+- Callers must re-implement retry logic in JS modules, reducing determinism and increasing duplicated policy code.
+- Proposal:
+- Add optional per-endpoint retry policy (`max_attempts`, `base_backoff_ms`, `max_backoff_ms`, `jitter`, `retry_on_status`, `retry_on_io_errors`).
+- Include attempt metadata in endpoint response for observability.
+
+### 13) Method support is narrow for modern API/tooling integrations
+- Severity: low
+- Category: missing capability (protocol coverage)
+- Status: open
+- Evidence:
+- `HttpMethod` supports only `GET/POST/PUT/DELETE` (`src/http.rs:21` to `src/http.rs:30`).
+- Impact:
+- Integrations requiring `PATCH`, `HEAD`, or `OPTIONS` need awkward endpoint workarounds or are blocked.
+- Proposal:
+- Extend `HttpMethod` enum to include `Patch`, `Head`, and `Options`.
+- Keep existing body rules by method capability.
+
+### 14) No pool telemetry hooks for autoscaling and SLO-driven orchestration
+- Severity: medium
+- Category: missing capability (observability)
+- Status: open
+- Evidence:
+- Pool internals track signals (`restart_blocked`, worker map, queue channel), but there is no public stats/introspection API (`src/pool.rs:124` to `src/pool.rs:141`, `src/pool.rs:344` to `src/pool.rs:355`).
+- Impact:
+- Orchestrators cannot make informed scaling or circuit decisions from native pool state.
+- Proposal:
+- Add `MechanicsPool::stats()` snapshot (live workers, desired workers, queue depth/capacity, restart-blocked state, restart counters).
+- Optionally add callback hooks for worker crash/restart events.
+
+### 15) Config ergonomics for large endpoint sets are limited
+- Severity: low
+- Category: missing capability (developer experience)
+- Status: open
+- Evidence:
+- `MechanicsConfig` is built as one complete in-memory map and validated eagerly (`src/http.rs:1049` to `src/http.rs:1077`).
+- There is no layered composition/override API for environment-specific endpoint differences.
+- Impact:
+- Multi-tenant or staged orchestrators must build custom merge logic around the crate.
+- Proposal:
+- Add helper constructors for layered composition (`from_base_with_overrides`, `merge_validated`) and deterministic conflict reporting.
+
+### 16) Built-in runtime modules do not expose orchestration primitives
+- Severity: low
+- Category: missing capability (runtime expressiveness)
+- Status: open
+- Evidence:
+- Current synthetic modules are endpoint + codecs + RNG (`src/runtime/synthetic_modules.rs`, `src/lib.rs:19` to `src/lib.rs:24`).
+- No built-ins for stable id generation, structured step logging, or resumable checkpoint helpers.
+- Impact:
+- Users rebuild these primitives in each script set, often inconsistently.
+- Proposal:
+- Consider adding optional synthetic modules (feature-gated) for deterministic IDs, step/event emission hooks, and checkpoint serialization helpers.
+- Keep default runtime minimal by making these opt-in.

@@ -264,3 +264,38 @@ fn timed_out_job_does_not_leak_pending_timeout_tasks_into_next_job() {
         .expect("next job should not execute leaked timer tasks");
     assert_eq!(value, json!(7));
 }
+
+#[test]
+fn pool_run_inside_tokio_spawn_blocking_succeeds() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("create tokio runtime");
+
+    let task_result = runtime.block_on(async {
+        tokio::task::spawn_blocking(|| {
+            let pool = MechanicsPool::new(MechanicsPoolConfig {
+                worker_count: 1,
+                ..Default::default()
+            })
+            .expect("create pool");
+            let job = make_job(
+                r#"
+                    export default function main(arg) {
+                        return { ok: true, got: arg };
+                    }
+                "#,
+                MechanicsConfig::new(HashMap::new()).expect("create config"),
+                json!({"via":"spawn_blocking"}),
+            );
+            pool.run(job)
+        })
+        .await
+    });
+
+    let value = task_result
+        .expect("spawn_blocking task should join successfully")
+        .expect("run should succeed from spawn_blocking");
+    assert_eq!(value["ok"], json!(true));
+    assert_eq!(value["got"]["via"], json!("spawn_blocking"));
+}

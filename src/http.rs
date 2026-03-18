@@ -642,6 +642,9 @@ impl HttpEndpoint {
         }
 
         let res = req.send().await.map_err(into_io_error)?;
+        let status = res.status();
+        let status_code = status.as_u16();
+        let ok = status.is_success();
         let res = if self.allow_non_success_status {
             res
         } else {
@@ -670,6 +673,8 @@ impl HttpEndpoint {
             return Ok(EndpointResponse {
                 body: EndpointResponseBody::Empty,
                 headers: response_headers,
+                status: status_code,
+                ok,
             });
         }
 
@@ -690,6 +695,8 @@ impl HttpEndpoint {
         Ok(EndpointResponse {
             body,
             headers: response_headers,
+            status: status_code,
+            ok,
         })
     }
 }
@@ -1040,6 +1047,8 @@ pub(crate) enum EndpointResponseBody {
 pub(crate) struct EndpointResponse {
     pub(crate) body: EndpointResponseBody,
     pub(crate) headers: HashMap<String, String>,
+    pub(crate) status: u16,
+    pub(crate) ok: bool,
 }
 
 /// Serializable runtime data injected into the JS context.

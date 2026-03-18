@@ -77,7 +77,9 @@ Resolution behavior:
 - Response body parsing uses endpoint `response_body_type`.
 - Response body size is bounded by endpoint `response_max_bytes` if set, otherwise by pool default `default_http_response_max_bytes`.
 - Empty response bodies are represented as `response.body = null`.
-- Endpoint result is always an object: `{ body, headers }`.
+- Endpoint result is always an object: `{ body, headers, status, ok }`.
+- `status` is the HTTP status code.
+- `ok` is `true` for `2xx` statuses and `false` otherwise.
 - `headers` includes only names allowlisted by endpoint `exposed_response_headers` (keys are lowercase).
 - If an exposed header has multiple values, they are joined with `", "`.
 - If an exposed header value is non-UTF-8, it is represented with lossy UTF-8 decoding.
@@ -271,6 +273,12 @@ Response-size behavior:
 - Non-blocking enqueue attempt.
 - If enqueue succeeds, it still waits for execution result (same bounded reply timeout model as `run`).
 - If queue is already full, returns `QueueFull` immediately.
+
+### Async runtime interop
+- Rust API is intentionally synchronous (no crate-provided async `run` API) to avoid requiring Tokio or any specific async runtime.
+- `MechanicsPool::new`, `run`, and `run_try_enqueue` may block the calling thread and should not be called directly on an async executor worker thread.
+- For Tokio integration, call synchronous methods inside `tokio::task::spawn_blocking(...)`.
+- Current implementation does not require caller-owned Tokio runtime state for these sync APIs; using them from `spawn_blocking` is supported.
 
 ### Shutdown
 Dropping `MechanicsPool`:
