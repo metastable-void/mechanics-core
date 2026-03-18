@@ -6,6 +6,13 @@ use super::{
     EndpointCallBody, EndpointCallOptions, EndpointHttpClient, EndpointHttpRequest,
     EndpointHttpRequestBody, EndpointResponse, EndpointResponseBody, HttpMethod, into_io_error,
 };
+use super::{
+    query::{
+        resolve_slotted_query_value, validate_byte_len, validate_min_max_bounds,
+        validate_query_key, validate_slot_name,
+    },
+    template::{UrlTemplateChunk, parse_url_template, percent_encode_component},
+};
 use boa_engine::{JsData, Trace};
 use boa_gc::Finalize;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, RETRY_AFTER, USER_AGENT};
@@ -963,12 +970,6 @@ fn extend_body_with_limit(
 }
 
 #[derive(Clone, Debug)]
-enum UrlTemplateChunk {
-    Literal(String),
-    Slot(String),
-}
-
-#[derive(Clone, Debug)]
 pub(crate) struct PreparedHttpEndpoint {
     parsed_url_chunks: Vec<UrlTemplateChunk>,
     url_slot_names: Vec<String>,
@@ -976,238 +977,6 @@ pub(crate) struct PreparedHttpEndpoint {
     allowed_query_slots: HashSet<String>,
     allowed_overrides: HashSet<HeaderName>,
     exposed_response_allowlist: HashSet<HeaderName>,
-}
-
-fn parse_url_template(template: &str) -> std::io::Result<(Vec<UrlTemplateChunk>, Vec<String>)> {
-    let mut chunks = Vec::new();
-    let mut slots = Vec::new();
-    let mut seen_slots = HashSet::new();
-
-    let mut cursor = 0usize;
-    loop {
-        let Some(open_rel) = template[cursor..].find('{') else {
-            break;
-        };
-
-        let open = cursor.checked_add(open_rel).ok_or(Error::new(
-            ErrorKind::InvalidInput,
-            "url_template index overflow",
-        ))?;
-        if open > cursor {
-            chunks.push(UrlTemplateChunk::Literal(template[cursor..open].to_owned()));
-        }
-
-        let after_open = open.checked_add(1).ok_or(Error::new(
-            ErrorKind::InvalidInput,
-            "url_template index overflow",
-        ))?;
-        let Some(close_rel) = template[after_open..].find('}') else {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "url_template contains unmatched `{`",
-            ));
-        };
-
-        let close = after_open.checked_add(close_rel).ok_or(Error::new(
-            ErrorKind::InvalidInput,
-            "url_template index overflow",
-        ))?;
-        let slot = &template[after_open..close];
-        if slot.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "url_template contains empty `{}` placeholder",
-            ));
-        }
-        if slot.contains('{') {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "url_template contains nested `{` in placeholder",
-            ));
-        }
-        validate_slot_name(slot)?;
-
-        if !seen_slots.insert(slot.to_owned()) {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("url_template contains duplicate slot `{slot}`"),
-            ));
-        }
-
-        let slot_owned = slot.to_owned();
-        slots.push(slot_owned.clone());
-        chunks.push(UrlTemplateChunk::Slot(slot_owned));
-        cursor = close.checked_add(1).ok_or(Error::new(
-            ErrorKind::InvalidInput,
-            "url_template index overflow",
-        ))?;
-    }
-
-    if let Some(stray) = template[cursor..].find('}') {
-        let idx = cursor.checked_add(stray).ok_or(Error::new(
-            ErrorKind::InvalidInput,
-            "url_template index overflow",
-        ))?;
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!("url_template contains unmatched `}}` at byte index {idx}"),
-        ));
-    }
-
-    if cursor < template.len() {
-        chunks.push(UrlTemplateChunk::Literal(template[cursor..].to_owned()));
-    }
-
-    Ok((chunks, slots))
-}
-
-fn resolve_slotted_query_value(
-    slot: &str,
-    mode: SlottedQueryMode,
-    default: Option<&str>,
-    provided: Option<&str>,
-    min_bytes: Option<usize>,
-    max_bytes: Option<usize>,
-) -> std::io::Result<Option<String>> {
-    let value = match mode {
-        SlottedQueryMode::Required => {
-            let candidate = match provided {
-                Some(v) if !v.is_empty() => Some(v),
-                Some(_) | None => default.filter(|v| !v.is_empty()),
-            };
-            let Some(candidate) = candidate else {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("required query slot `{slot}` is missing or empty"),
-                ));
-            };
-            Some(candidate.to_owned())
-        }
-        SlottedQueryMode::RequiredAllowEmpty => {
-            let candidate = match provided {
-                Some(v) => Some(v),
-                None => default,
-            };
-            let Some(candidate) = candidate else {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("required query slot `{slot}` is missing"),
-                ));
-            };
-            Some(candidate.to_owned())
-        }
-        SlottedQueryMode::Optional => match provided {
-            Some(v) if !v.is_empty() => Some(v.to_owned()),
-            Some(_) | None => default.filter(|v| !v.is_empty()).map(ToOwned::to_owned),
-        },
-        SlottedQueryMode::OptionalAllowEmpty => match provided {
-            Some(v) => Some(v.to_owned()),
-            None => default.map(ToOwned::to_owned),
-        },
-    };
-
-    if let Some(ref value) = value {
-        validate_byte_len(slot, value, min_bytes, max_bytes)?;
-    }
-
-    Ok(value)
-}
-
-fn validate_slot_name(slot: &str) -> std::io::Result<()> {
-    if slot.is_empty() {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            "slot name must not be empty",
-        ));
-    }
-
-    if !slot.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!(
-                "slot name `{slot}` is invalid: only ASCII letters, digits, and `_` are allowed"
-            ),
-        ));
-    }
-
-    Ok(())
-}
-
-fn validate_query_key(key: &str) -> std::io::Result<()> {
-    if key.is_empty() {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            "query key must not be empty",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_min_max_bounds(
-    slot: &str,
-    min_bytes: Option<usize>,
-    max_bytes: Option<usize>,
-) -> std::io::Result<()> {
-    if let (Some(min), Some(max)) = (min_bytes, max_bytes)
-        && min > max
-    {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!("slot `{slot}` has invalid byte bounds: min_bytes ({min}) > max_bytes ({max})"),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_byte_len(
-    slot: &str,
-    value: &str,
-    min_bytes: Option<usize>,
-    max_bytes: Option<usize>,
-) -> std::io::Result<()> {
-    let len = value.len();
-    if let Some(min) = min_bytes
-        && len < min
-    {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!("slot `{slot}` is too short: {len} bytes < min_bytes ({min})"),
-        ));
-    }
-    if let Some(max) = max_bytes
-        && len > max
-    {
-        return Err(Error::new(
-            ErrorKind::InvalidInput,
-            format!("slot `{slot}` is too long: {len} bytes > max_bytes ({max})"),
-        ));
-    }
-    Ok(())
-}
-
-#[allow(clippy::indexing_slicing)]
-fn percent_encode_component(input: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-
-    let mut out = String::with_capacity(input.len());
-    for b in input.bytes() {
-        let is_unreserved = matches!(
-            b,
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~'
-        );
-        if is_unreserved {
-            out.push(char::from(b));
-            continue;
-        }
-        let hi = usize::from(b >> 4);
-        let lo = usize::from(b & 0x0F);
-        // SAFETY: both nibbles are guaranteed in `0..=15`, matching `HEX` length.
-        debug_assert!(hi < HEX.len() && lo < HEX.len());
-        out.push('%');
-        out.push(char::from(HEX[hi]));
-        out.push(char::from(HEX[lo]));
-    }
-    out
 }
 
 #[cfg(test)]

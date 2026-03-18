@@ -1,10 +1,12 @@
 mod config;
-mod model;
+mod endpoint;
 mod options;
+mod query;
+mod template;
 mod transport;
 
 pub use config::MechanicsConfig;
-pub use model::{
+pub use endpoint::{
     EndpointBodyType, EndpointRetryPolicy, HttpEndpoint, QuerySpec, SlottedQueryMode, UrlParamSpec,
 };
 pub use transport::{
@@ -12,7 +14,7 @@ pub use transport::{
     HttpMethod, ReqwestEndpointHttpClient,
 };
 
-pub(crate) use model::PreparedHttpEndpoint;
+pub(crate) use endpoint::PreparedHttpEndpoint;
 pub(crate) use options::{
     EndpointCallBody, EndpointCallOptions, EndpointResponse, EndpointResponseBody,
 };
