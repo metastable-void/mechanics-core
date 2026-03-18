@@ -16,25 +16,11 @@ Update this section on code additions.
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`77 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`82 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- Last recorded result: pass (2026-03-18).
+- Result: pass (2026-03-18).
 
 ## Active findings
-
-### 12) HTTP resilience policies are not first-class (retry/backoff/rate-limit)
-- Severity: medium
-- Category: missing capability (reliability)
-- Status: open
-- Evidence:
-- Endpoint config currently has timeout/size/status policy, but no retry/backoff/circuit-breaker controls (`src/http.rs`).
-- Impact:
-- Callers must re-implement retry logic in JS modules, reducing determinism and increasing duplicated policy code.
-- Proposed direction:
-- Add optional endpoint retry policy (`max_attempts`, `base_backoff_ms`, `max_backoff_ms`, `jitter`, `retry_on_status`, `retry_on_io_errors`).
-- Retry only idempotent methods by default (`GET`/`HEAD`/`OPTIONS`) unless explicitly opted in for mutating methods.
-- Emit attempt metadata on response (`attempt`, `max_attempts`) and expose terminal retry reason in execution errors.
-- JSON-first requirement: policy must be fully representable in endpoint config JSON (`serde`), because parsing `MechanicsConfig` (and often whole `MechanicsJob`) from JSON is a first-class crate feature.
 
 ### 14) No public pool telemetry/stats API despite internal state tracking
 - Severity: medium
@@ -77,5 +63,6 @@ Update this section on code additions.
 - 9) Default test coverage gaps for high-risk behavior: fixed with deterministic local tests (queue pressure, restart recovery, disconnect paths).
 - 10) Async API intent not documented: fixed docs to state sync API is intentional and Tokio usage should be through `spawn_blocking`; added interop test.
 - 11) Endpoint response missing status metadata: fixed by adding `status`/`ok` fields across runtime, docs, types, and tests.
+- 12) HTTP resilience policies missing: fixed with JSON-deserializable `retry_policy` on endpoints (retry/backoff/rate-limit behavior, config validation, and tests).
 - 13) HTTP method set too narrow: fixed by adding `PATCH`/`HEAD`/`OPTIONS` and aligning body policy to RFC 9110 baseline.
 - 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).

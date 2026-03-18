@@ -9,7 +9,7 @@
 The crate API is exported from `src/lib.rs`:
 - `MechanicsPool`, `MechanicsPoolConfig`
 - `MechanicsJob`, `MechanicsExecutionLimits`
-- `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`
+- `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`
 - `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
 - `MechanicsError`
 
@@ -69,6 +69,7 @@ export default async function main(arg) {
 Resolution behavior:
 - `name` must match a key in `MechanicsConfig.endpoints`.
 - Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
+- Endpoint config can optionally include resilience policy (`retry_policy`) for retries/backoff/rate-limit handling.
 - URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
 - URL template must not contain query string or fragment; use `query_specs` for query output.
 - Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
@@ -90,6 +91,11 @@ Resolution behavior:
 - If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
 - `HttpEndpoint::with_allow_non_success_status(true)` opt-in allows non-2xx responses to proceed and be parsed according to `response_body_type` (`json`/`utf8`/`bytes`).
+- Retry behavior is driven by endpoint `retry_policy`:
+- retries apply to configured status codes and transport errors up to `max_attempts`,
+- exponential backoff uses `base_backoff_ms` and `max_backoff_ms`,
+- `429` handling can respect `Retry-After` (delta-seconds) when enabled,
+- all retry waits are capped by `max_retry_delay_ms`.
 
 `endpoint(name, options)` payload shape (camelCase):
 - `urlParams`: object of string slot values for URL template substitution.
@@ -113,6 +119,11 @@ Config shape is JSON-friendly and snake_case (`serde`):
 - `request_body_type`: `"json" | "utf8" | "bytes"` (method defaults apply).
 - `response_body_type`: `"json" | "utf8" | "bytes"` (default `"json"`).
 - `response_max_bytes`: optional max response-body size in bytes (`null` means use pool default).
+- `retry_policy`: optional resilience policy (JSON-first/serde-deserializable):
+- `max_attempts` (default `1` means no retries),
+- `base_backoff_ms`, `max_backoff_ms`, `max_retry_delay_ms`,
+- `rate_limit_backoff_ms`, `retry_on_io_errors`, `retry_on_timeout`, `respect_retry_after`,
+- `retry_on_status` (default `[429, 500, 502, 503, 504]`).
 - `overridable_request_headers`: optional list of request header names that JS may override with `options.headers` (case-insensitive).
 - `exposed_response_headers`: optional list of response header names exposed on endpoint result `headers` (case-insensitive).
 - `url_template` is a full URL template string and placeholder names must be unique.

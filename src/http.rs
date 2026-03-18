@@ -1,7 +1,7 @@
 use crate::error::MechanicsError;
 use boa_engine::{JsData, Trace};
 use boa_gc::Finalize;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, RETRY_AFTER, USER_AGENT};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::{
@@ -78,6 +78,132 @@ pub enum EndpointBodyType {
     Utf8,
     /// Raw bytes payload (`application/octet-stream`).
     Bytes,
+}
+
+/// Endpoint-level resilience policy for retries, backoff, and rate-limit handling.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct EndpointRetryPolicy {
+    /// Maximum total attempts (initial request + retries).
+    pub max_attempts: usize,
+    /// Base backoff delay in milliseconds for retry calculation.
+    pub base_backoff_ms: u64,
+    /// Maximum exponential backoff delay in milliseconds.
+    pub max_backoff_ms: u64,
+    /// Maximum delay applied from any retry rule in milliseconds.
+    pub max_retry_delay_ms: u64,
+    /// Fallback delay in milliseconds for rate-limited responses when `Retry-After` is absent.
+    pub rate_limit_backoff_ms: u64,
+    /// Whether transport I/O failures should be retried.
+    pub retry_on_io_errors: bool,
+    /// Whether timeout failures should be retried.
+    pub retry_on_timeout: bool,
+    /// Whether to honor `Retry-After` on status `429`.
+    pub respect_retry_after: bool,
+    /// HTTP statuses eligible for retries.
+    pub retry_on_status: Vec<u16>,
+}
+
+impl Default for EndpointRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            base_backoff_ms: 100,
+            max_backoff_ms: 5_000,
+            max_retry_delay_ms: 30_000,
+            rate_limit_backoff_ms: 1_000,
+            retry_on_io_errors: true,
+            retry_on_timeout: true,
+            respect_retry_after: true,
+            retry_on_status: vec![429, 500, 502, 503, 504],
+        }
+    }
+}
+
+impl EndpointRetryPolicy {
+    fn validate(&self) -> std::io::Result<()> {
+        if self.max_attempts == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "retry_policy.max_attempts must be > 0",
+            ));
+        }
+        if self.max_backoff_ms < self.base_backoff_ms {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "retry_policy.max_backoff_ms must be >= base_backoff_ms",
+            ));
+        }
+        if self.max_retry_delay_ms == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "retry_policy.max_retry_delay_ms must be > 0",
+            ));
+        }
+        for status in &self.retry_on_status {
+            if !(100..=599).contains(status) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("retry_policy.retry_on_status contains invalid status code `{status}`"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn should_retry_status(&self, status: u16) -> bool {
+        self.retry_on_status.contains(&status)
+    }
+
+    fn should_retry_transport_error(&self, err: &reqwest::Error) -> bool {
+        if err.is_timeout() {
+            return self.retry_on_timeout;
+        }
+        self.retry_on_io_errors
+    }
+
+    fn retry_delay_for_transport(&self, attempt: usize) -> Duration {
+        Duration::from_millis(self.backoff_delay_ms(attempt))
+    }
+
+    fn retry_delay_for_status(&self, status: u16, headers: &HeaderMap, attempt: usize) -> Duration {
+        let delay_ms = if status == 429 {
+            self.rate_limit_delay_ms(headers, attempt)
+        } else {
+            self.backoff_delay_ms(attempt)
+        };
+        Duration::from_millis(delay_ms)
+    }
+
+    fn rate_limit_delay_ms(&self, headers: &HeaderMap, attempt: usize) -> u64 {
+        let retry_after_ms = if self.respect_retry_after {
+            headers
+                .get(RETRY_AFTER)
+                .and_then(Self::parse_retry_after_ms)
+                .map(|v| v.min(self.max_retry_delay_ms))
+        } else {
+            None
+        };
+        retry_after_ms.unwrap_or_else(|| {
+            self.rate_limit_backoff_ms
+                .max(self.backoff_delay_ms(attempt))
+                .min(self.max_retry_delay_ms)
+        })
+    }
+
+    fn parse_retry_after_ms(value: &HeaderValue) -> Option<u64> {
+        let seconds = value.to_str().ok()?.trim().parse::<u64>().ok()?;
+        Some(seconds.saturating_mul(1_000))
+    }
+
+    fn backoff_delay_ms(&self, attempt: usize) -> u64 {
+        let exp = (attempt.saturating_sub(1)).min(20);
+        let factor = 2u64.saturating_pow(exp as u32);
+        self.base_backoff_ms
+            .saturating_mul(factor)
+            .min(self.max_backoff_ms)
+            .min(self.max_retry_delay_ms)
+    }
 }
 
 /// Validation and default policy for one URL template slot.
@@ -182,6 +308,10 @@ pub struct HttpEndpoint {
     timeout_ms: Option<u64>,
     #[serde(default)]
     allow_non_success_status: bool,
+    // SAFETY: `EndpointRetryPolicy` stores plain Rust data and does not hold GC-managed values.
+    #[unsafe_ignore_trace]
+    #[serde(default)]
+    retry_policy: EndpointRetryPolicy,
 }
 
 impl HttpEndpoint {
@@ -206,6 +336,7 @@ impl HttpEndpoint {
             response_max_bytes: None,
             timeout_ms: None,
             allow_non_success_status: false,
+            retry_policy: EndpointRetryPolicy::default(),
         }
     }
 
@@ -279,7 +410,14 @@ impl HttpEndpoint {
         self
     }
 
+    /// Sets endpoint retry/backoff/rate-limit policy.
+    pub fn with_retry_policy(mut self, retry_policy: EndpointRetryPolicy) -> Self {
+        self.retry_policy = retry_policy;
+        self
+    }
+
     pub(crate) fn validate_config(&self) -> std::io::Result<()> {
+        self.retry_policy.validate()?;
         validate_header_name_list(
             &self.overridable_request_headers,
             "overridable_request_headers",
@@ -601,66 +739,130 @@ impl HttpEndpoint {
             };
 
         let headers = self.build_headers(default_content_type, options)?;
-        let mut req = client
-            .request(self.method.as_reqwest_method(), url)
-            .headers(headers);
+        let build_request = || -> std::io::Result<reqwest::RequestBuilder> {
+            let mut req = client
+                .request(self.method.as_reqwest_method(), url.clone())
+                .headers(headers.clone());
 
-        if let Some(timeout_ms) = timeout_ms {
-            req = req.timeout(Duration::from_millis(timeout_ms));
-        }
+            if let Some(timeout_ms) = timeout_ms {
+                req = req.timeout(Duration::from_millis(timeout_ms));
+            }
 
-        if supports_body {
-            match (&request_body_type, &options.body) {
-                (_, EndpointCallBody::Absent) => {}
-                (EndpointBodyType::Json, EndpointCallBody::Json(v)) => {
-                    req = req.json(v);
+            if supports_body {
+                match (&request_body_type, &options.body) {
+                    (_, EndpointCallBody::Absent) => {}
+                    (EndpointBodyType::Json, EndpointCallBody::Json(v)) => {
+                        req = req.json(v);
+                    }
+                    (EndpointBodyType::Json, EndpointCallBody::Utf8(s)) => {
+                        req = req.json(s);
+                    }
+                    (EndpointBodyType::Json, EndpointCallBody::Bytes(_)) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "request_body_type `json` requires a JSON-compatible value",
+                        ));
+                    }
+                    (EndpointBodyType::Utf8, EndpointCallBody::Utf8(s)) => {
+                        req = req.body(s.clone());
+                    }
+                    (EndpointBodyType::Utf8, _) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "request_body_type `utf8` requires `options.body` to be a string",
+                        ));
+                    }
+                    (EndpointBodyType::Bytes, EndpointCallBody::Bytes(bytes)) => {
+                        req = req.body(bytes.clone());
+                    }
+                    (EndpointBodyType::Bytes, _) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "request_body_type `bytes` requires `options.body` to be a typed array, ArrayBuffer, or DataView",
+                        ));
+                    }
                 }
-                (EndpointBodyType::Json, EndpointCallBody::Utf8(s)) => {
-                    req = req.json(s);
-                }
-                (EndpointBodyType::Json, EndpointCallBody::Bytes(_)) => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        "request_body_type `json` requires a JSON-compatible value",
-                    ));
-                }
-                (EndpointBodyType::Utf8, EndpointCallBody::Utf8(s)) => {
-                    req = req.body(s.clone());
-                }
-                (EndpointBodyType::Utf8, _) => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        "request_body_type `utf8` requires `options.body` to be a string",
-                    ));
-                }
-                (EndpointBodyType::Bytes, EndpointCallBody::Bytes(bytes)) => {
-                    req = req.body(bytes.clone());
-                }
-                (EndpointBodyType::Bytes, _) => {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        "request_body_type `bytes` requires `options.body` to be a typed array, ArrayBuffer, or DataView",
-                    ));
+            } else if !matches!(options.body, EndpointCallBody::Absent) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "HTTP {} endpoint does not accept a request body",
+                        self.method.as_str()
+                    ),
+                ));
+            }
+
+            Ok(req)
+        };
+
+        let max_attempts = self.retry_policy.max_attempts;
+        let (res, status_code, ok) = {
+            let mut final_response = None;
+            let mut final_status = 0u16;
+            let mut final_ok = false;
+
+            for attempt in 1..=max_attempts {
+                let req = build_request()?;
+                match req.send().await {
+                    Ok(res) => {
+                        let status = res.status();
+                        let status_code = status.as_u16();
+                        let ok = status.is_success();
+
+                        let should_retry_status = attempt < max_attempts
+                            && self.retry_policy.should_retry_status(status_code);
+                        if should_retry_status {
+                            let delay = self.retry_policy.retry_delay_for_status(
+                                status_code,
+                                res.headers(),
+                                attempt,
+                            );
+                            if !delay.is_zero() {
+                                tokio::time::sleep(delay).await;
+                            }
+                            continue;
+                        }
+
+                        if !self.allow_non_success_status && !ok {
+                            return match res.error_for_status() {
+                                Ok(_) => Err(Error::other(
+                                    "expected non-success status to produce an error",
+                                )),
+                                Err(err) => Err(into_io_error(err)),
+                            };
+                        }
+
+                        final_status = status_code;
+                        final_ok = ok;
+                        final_response = Some(res);
+                        break;
+                    }
+                    Err(err) => {
+                        if attempt < max_attempts
+                            && self.retry_policy.should_retry_transport_error(&err)
+                        {
+                            let delay = self.retry_policy.retry_delay_for_transport(attempt);
+                            if !delay.is_zero() {
+                                tokio::time::sleep(delay).await;
+                            }
+                            continue;
+                        }
+                        return Err(into_io_error(err));
+                    }
                 }
             }
-        } else if !matches!(options.body, EndpointCallBody::Absent) {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!(
-                    "HTTP {} endpoint does not accept a request body",
-                    self.method.as_str()
-                ),
-            ));
-        }
 
-        let res = req.send().await.map_err(into_io_error)?;
-        let status = res.status();
-        let status_code = status.as_u16();
-        let ok = status.is_success();
-        let res = if self.allow_non_success_status {
-            res
-        } else {
-            res.error_for_status().map_err(into_io_error)?
+            let Some(res) = final_response else {
+                return Err(Error::other(
+                    "endpoint request attempts exhausted without terminal response",
+                ));
+            };
+            let res = if self.allow_non_success_status {
+                res
+            } else {
+                res.error_for_status().map_err(into_io_error)?
+            };
+            (res, final_status, final_ok)
         };
         let response_headers =
             extract_exposed_response_headers(res.headers(), &self.exposed_response_headers)?;
@@ -1105,9 +1307,9 @@ impl MechanicsConfig {
         endpoint: HttpEndpoint,
     ) -> Result<Self, MechanicsError> {
         let name = name.into();
-        endpoint
-            .validate_config()
-            .map_err(|e| MechanicsError::runtime_pool(format!("invalid endpoint `{name}` config: {e}")))?;
+        endpoint.validate_config().map_err(|e| {
+            MechanicsError::runtime_pool(format!("invalid endpoint `{name}` config: {e}"))
+        })?;
         self.endpoints.insert(name, endpoint);
         Ok(self)
     }

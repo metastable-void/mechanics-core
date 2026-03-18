@@ -159,8 +159,12 @@ fn mechanics_config_composition_helpers_apply_validation_and_overrides() {
     )]))
     .expect("base config should build");
 
-    let over = HttpEndpoint::new(HttpMethod::Patch, "https://example.com/{id}", HashMap::new())
-        .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
+    let over = HttpEndpoint::new(
+        HttpMethod::Patch,
+        "https://example.com/{id}",
+        HashMap::new(),
+    )
+    .with_url_param_specs(HashMap::from([("id".to_owned(), UrlParamSpec::default())]));
     let cfg = base
         .clone()
         .with_endpoint("base", over.clone())
@@ -189,5 +193,8 @@ fn mechanics_config_composition_helpers_reject_invalid_endpoint() {
     let err = base
         .with_endpoint("bad", invalid)
         .expect_err("invalid endpoint must be rejected");
-    assert!(err.msg().contains("missing url_param_specs entry for slot `id`"));
+    assert!(
+        err.msg()
+            .contains("missing url_param_specs entry for slot `id`")
+    );
 }
