@@ -115,25 +115,7 @@ impl MechanicsPool {
     ///
     /// If any of those steps fail, no usable pool is returned.
     pub fn new(config: MechanicsPoolConfig) -> Result<Self, MechanicsError> {
-        if config.worker_count == 0 {
-            return Err(MechanicsError::runtime_pool("worker_count must be > 0"));
-        }
-        if config.queue_capacity == 0 {
-            return Err(MechanicsError::runtime_pool("queue_capacity must be > 0"));
-        }
-        if config.max_restarts_in_window == 0 {
-            return Err(MechanicsError::runtime_pool(
-                "max_restarts_in_window must be > 0",
-            ));
-        }
-        if config.run_timeout.is_zero() {
-            return Err(MechanicsError::runtime_pool("run_timeout must be > 0"));
-        }
-        if Instant::now().checked_add(config.run_timeout).is_none() {
-            return Err(MechanicsError::runtime_pool(
-                "run_timeout is too large for the current platform clock",
-            ));
-        }
+        config.validate()?;
 
         let endpoint_http_client = if let Some(client) = config.endpoint_http_client.clone() {
             client

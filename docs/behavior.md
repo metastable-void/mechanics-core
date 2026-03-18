@@ -381,7 +381,6 @@ Common user-visible trigger categories:
 ## Usage example (Rust)
 ```rust
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use mechanics_core::{
     HttpEndpoint, HttpMethod, MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig,
@@ -398,19 +397,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = MechanicsConfig::new(endpoints)?;
     let pool = MechanicsPool::new(MechanicsPoolConfig::default())?;
 
-    let job = MechanicsJob {
-        mod_source: Arc::from(
-            r#"
+    let job = MechanicsJob::new(
+        r#"
             import endpoint from \"mechanics:endpoint\";
             export default async function main(arg) {
                 const res = await endpoint(\"primary\", { body: arg });
                 return res.body;
             }
             "#,
-        ),
-        arg: Arc::new(json!({"hello": "world"})),
-        config: Arc::new(config),
-    };
+        json!({"hello": "world"}),
+        config,
+    )?;
 
     let value = pool.run(job)?;
     println!("{value}");

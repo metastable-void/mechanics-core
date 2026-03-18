@@ -213,9 +213,7 @@ impl RuntimeInternal {
 
     /// Parses and evaluates a module, invokes its default export, and returns the JS result.
     pub(crate) fn run_source_inner(&mut self, job: MechanicsJob) -> JsResult<JsValue> {
-        let arg = job.arg;
-        let config = job.config;
-        let source = job.mod_source;
+        let (source, arg, config) = job.into_parts();
         self.hooks.clear();
         let mut prepared_endpoints = HashMap::with_capacity(config.endpoints.len());
         for (name, endpoint) in &config.endpoints {

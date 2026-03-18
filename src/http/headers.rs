@@ -45,7 +45,10 @@ pub(super) fn extract_exposed_response_headers(
     allowlist: &[String],
 ) -> std::io::Result<HashMap<String, String>> {
     let allowlisted = allowlisted_header_names(allowlist, "exposed_response_headers")?;
-    extract_exposed_response_headers_prepared(&EndpointHttpHeaders::from_reqwest(headers), &allowlisted)
+    extract_exposed_response_headers_prepared(
+        &EndpointHttpHeaders::from_reqwest(headers),
+        &allowlisted,
+    )
 }
 
 pub(super) fn extract_exposed_response_headers_prepared(

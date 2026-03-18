@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use mechanics_core::{MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig};
 
 fn main() -> std::io::Result<()> {
@@ -18,11 +16,8 @@ fn main() -> std::io::Result<()> {
     let config: MechanicsConfig =
         serde_json::from_str(&config_json).map_err(std::io::Error::other)?;
     let pool = MechanicsPool::new(MechanicsPoolConfig::default()).map_err(std::io::Error::other)?;
-    let job = MechanicsJob {
-        mod_source: js_source.into(),
-        arg: Arc::new(serde_json::Value::Null),
-        config: Arc::new(config),
-    };
+    let job = MechanicsJob::new(js_source, serde_json::Value::Null, config)
+        .map_err(std::io::Error::other)?;
     let value = pool.run(job).map_err(std::io::Error::other)?;
     let json = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
     println!("{}", &json);

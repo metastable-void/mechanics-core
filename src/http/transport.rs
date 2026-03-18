@@ -87,11 +87,7 @@ impl EndpointHttpHeaders {
         }
     }
 
-    pub fn insert(
-        &mut self,
-        name: impl Into<String>,
-        value: impl Into<String>,
-    ) -> &mut Self {
+    pub fn insert(&mut self, name: impl Into<String>, value: impl Into<String>) -> &mut Self {
         self.entries.push((name.into(), value.into()));
         self
     }
@@ -128,12 +124,13 @@ impl EndpointHttpHeaders {
     pub(crate) fn to_reqwest(&self) -> std::io::Result<reqwest::header::HeaderMap> {
         let mut map = reqwest::header::HeaderMap::new();
         for (name, value) in &self.entries {
-            let header_name = reqwest::header::HeaderName::try_from(name.as_str()).map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("invalid transport request header name `{name}`: {e}"),
-                )
-            })?;
+            let header_name =
+                reqwest::header::HeaderName::try_from(name.as_str()).map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!("invalid transport request header name `{name}`: {e}"),
+                    )
+                })?;
             let header_value =
                 reqwest::header::HeaderValue::try_from(value.as_str()).map_err(|e| {
                     Error::new(

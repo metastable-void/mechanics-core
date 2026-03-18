@@ -1,7 +1,7 @@
 use super::*;
 use crate::http::{
-    EndpointCallBody, EndpointCallOptions, EndpointHttpClient, EndpointHttpRequest,
-    EndpointHttpHeaders, EndpointHttpRequestBody, EndpointResponse, EndpointResponseBody,
+    EndpointCallBody, EndpointCallOptions, EndpointHttpClient, EndpointHttpHeaders,
+    EndpointHttpRequest, EndpointHttpRequestBody, EndpointResponse, EndpointResponseBody,
     into_io_error,
 };
 use serde_json::Value;

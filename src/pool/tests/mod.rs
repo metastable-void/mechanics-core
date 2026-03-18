@@ -19,11 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 fn make_job(source: &str, config: MechanicsConfig, arg: Value) -> MechanicsJob {
-    MechanicsJob {
-        mod_source: Arc::<str>::from(source),
-        arg: Arc::new(arg),
-        config: Arc::new(config),
-    }
+    MechanicsJob::new(source, arg, config).expect("construct mechanics job")
 }
 
 fn http_status_reason(status: u16) -> &'static str {

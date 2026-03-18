@@ -21,22 +21,6 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- 23) Public mutable fields on core config/job types allow invariant bypass at construction time
-  - Severity: medium
-  - Type: encapsulation / visibility
-  - Evidence:
-  - `MechanicsJob` fields are `pub` (`mod_source`, `arg`, `config`) in `src/job.rs`.
-  - `MechanicsExecutionLimits` fields are all `pub` in `src/job.rs`.
-  - `MechanicsPoolConfig` fields are largely `pub` in `src/pool/config.rs`.
-  - Risk:
-  - Callers can construct values that bypass intended preconditions (for example, empty `mod_source`, unreasonable execution limits) until later runtime validation paths.
-  - Invariants are split across deserialization, pool construction, and runtime behavior instead of being enforced at type boundaries.
-  - Proposed direction:
-  - Preserve JSON-first API as a hard requirement: `serde_json` deserialization into public config/job types must remain first-class and ergonomic.
-  - Add validated constructors/builders for Rust-native construction paths, while keeping/describing serde-based validation as the primary JSON ingestion path.
-  - Move invariant checks into shared validation entrypoints used by both constructors and serde paths.
-  - This is a public pre-publication repository; compatibility-breaking visibility tightening is acceptable during maturation if it materially improves invariant safety, with migration/stabilization planned before crates.io release.
-
 - 24) Internal pool state structs expose wide `pub(crate)` field surfaces, increasing cross-module coupling
   - Severity: low
   - Type: encapsulation / maintainability
@@ -103,3 +87,4 @@ Update this section on code additions.
 - 20) Fixed 100ms worker/supervisor polling loops: fixed without regressing prior restart mitigations by switching workers to blocking channel select with explicit shutdown signaling, and supervisor to event-driven select plus periodic reconcile tick (for restart-window recovery logic).
 - 21) Per-worker Tokio runtime footprint scaling with worker count: documented as an intended design limitation (isolation-first worker model), not an immediate bug.
 - 22) Transport abstraction reqwest leak: fixed by introducing crate-owned transport-neutral endpoint types (`EndpointHttpHeaders`, string URL in `EndpointHttpRequest`) and confining reqwest conversions to `ReqwestEndpointHttpClient`; tests updated and passing.
+- 23) Public mutable core config/job fields bypassed invariants: fixed by tightening external field visibility (`pub(crate)`), adding validated public constructors/builders (`MechanicsJob::new`, `MechanicsExecutionLimits::new`, `MechanicsPoolConfig` builder methods), and centralizing pool-config validation while preserving JSON-first serde ingestion semantics.
