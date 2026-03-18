@@ -1224,7 +1224,7 @@ dependencies = [
  "data-encoding",
  "futures-concurrency",
  "futures-lite",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "hex",
  "parking_lot",
  "reqwest",
