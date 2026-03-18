@@ -457,7 +457,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - This crate currently does not include persistent module caching (source is parsed per job).
 
 ## Test coverage shape
-Unit tests under `src/pool/tests/` and `src/http/tests/` cover:
+Unit tests under `src/internal/pool/tests/` and `src/internal/http/tests/` cover:
 - config validation,
 - closed/unavailable pool behavior,
 - queue-full and enqueue-timeout paths,

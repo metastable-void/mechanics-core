@@ -18,7 +18,7 @@ Optional test suite:
 cargo test --all-targets -- --ignored
 ```
 
-Ignored tests currently cover network-bound endpoint behavior and require local socket bind permission (`src/pool/tests/endpoint_network.rs`).
+Ignored tests currently cover network-bound endpoint behavior and require local socket bind permission (`src/internal/pool/tests/endpoint_network.rs`).
 
 ## Common local loop
 1. Make a small change.
@@ -73,17 +73,17 @@ When changing runtime-facing behavior:
 - Preserve JSON-first API guarantees: serde JSON parseability of runtime-facing config/job types is a feature and must remain first-class.
 - If adding Rust-side constructors/builders or tightening visibility, keep serde and constructor validation behavior aligned and avoid breaking JSON ingestion flows.
 - Keep the boundary explicit: endpoint transport injection (`MechanicsPoolConfig.endpoint_http_client`) is a Rust-side pool config concern, not a JSON job config field.
-- If upgrading `boa_engine`, update `src/executor.rs` job routing and keep `job_routing_harness_covers_all_current_boa_job_variants` passing with explicit coverage for any newly constructible job variants.
+- If upgrading `boa_engine`, update `src/internal/executor.rs` job routing and keep `job_routing_harness_covers_all_current_boa_job_variants` passing with explicit coverage for any newly constructible job variants.
 
 Runtime builtins layout:
-- Synthetic runtime modules are defined under `src/runtime/builtins/*.rs`.
-- Register all builtins from `src/runtime/builtins/mod.rs` via `bundle_builtin_modules(...)`.
-- When adding a new builtin module, add a focused file in `src/runtime/builtins/`, expose a `register(...)` function there, and wire it into `bundle_builtin_modules(...)`.
+- Synthetic runtime modules are defined under `src/internal/runtime/builtins/*.rs`.
+- Register all builtins from `src/internal/runtime/builtins/mod.rs` via `bundle_builtin_modules(...)`.
+- When adding a new builtin module, add a focused file in `src/internal/runtime/builtins/`, expose a `register(...)` function there, and wire it into `bundle_builtin_modules(...)`.
 
 Synchronization primitives policy:
 - Use `parking_lot` exclusively for `Mutex` and `RwLock` in production code.
 - Do not introduce `std::sync::Mutex` or `std::sync::RwLock` in non-test paths.
 
 When changing config validation or endpoint behavior:
-- Add or update tests under `src/http/tests/` and `src/pool/tests/`.
+- Add or update tests under `src/internal/http/tests/` and `src/internal/pool/tests/`.
 - Re-check ignored endpoint network tests if the behavior involves HTTP timeout/status/size handling.

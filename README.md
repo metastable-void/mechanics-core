@@ -81,7 +81,7 @@ Optional (environment-dependent) tests:
 ```bash
 cargo test --all-targets -- --ignored
 ```
-Ignored tests in `src/pool/tests/endpoint_network.rs` require local socket bind permission.
+Ignored tests in `src/internal/pool/tests/endpoint_network.rs` require local socket bind permission.
 
 ## Quick usage
 Run the example runner:
@@ -112,7 +112,7 @@ export default function main(arg) {
 ```
 
 ## Documentation path policy
-- In project docs, record file paths as project-relative paths (for example, `src/http.rs`).
+- In project docs, record file paths as project-relative paths (for example, `src/internal/http/mod.rs`).
 - Do not record arbitrary absolute filesystem paths.
 
 ## Documentation map
