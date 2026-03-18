@@ -1,12 +1,22 @@
 use super::*;
 use crate::{
-    EndpointBodyType, HttpEndpoint, HttpMethod, MechanicsConfig, QuerySpec, SlottedQueryMode,
-    UrlParamSpec, http::ReqwestEndpointHttpClient,
+    EndpointBodyType, HttpEndpoint, HttpMethod, MechanicsConfig, MechanicsError,
+    MechanicsExecutionLimits, MechanicsJob, QuerySpec, SlottedQueryMode, UrlParamSpec,
+    http::ReqwestEndpointHttpClient,
 };
+use crossbeam_channel::bounded;
+use parking_lot::{Mutex, RwLock};
+use serde_json::Value;
 use serde_json::json;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Barrier;
+use std::sync::{
+    Arc, Barrier,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+use std::thread;
+use std::time::{Duration, Instant};
 
 fn make_job(source: &str, config: MechanicsConfig, arg: Value) -> MechanicsJob {
     MechanicsJob {
