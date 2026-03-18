@@ -16,23 +16,11 @@ Update this section on code additions.
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`82 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`83 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - Result: pass (2026-03-18).
 
 ## Active findings
-
-### 14) No public pool telemetry/stats API despite internal state tracking
-- Severity: medium
-- Category: missing capability (observability)
-- Status: open
-- Evidence:
-- Pool tracks worker and restart state internally, but exposes no public stats snapshot API (`src/pool.rs`).
-- Impact:
-- Orchestrators cannot make informed scaling/circuit decisions from native pool state.
-- Proposed direction:
-- Add `MechanicsPool::stats()` snapshot with counters (`jobs_submitted`, `jobs_completed`, `jobs_failed`, `worker_restarts`) and gauges (`live_workers`, `queue_depth`, `restart_blocked`).
-- Optionally add event hooks for worker crash/restart lifecycle events.
 
 ### 16) Built-in runtime modules do not expose orchestration primitives
 - Severity: low
@@ -65,4 +53,5 @@ Update this section on code additions.
 - 11) Endpoint response missing status metadata: fixed by adding `status`/`ok` fields across runtime, docs, types, and tests.
 - 12) HTTP resilience policies missing: fixed with JSON-deserializable `retry_policy` on endpoints (retry/backoff/rate-limit behavior, config validation, and tests).
 - 13) HTTP method set too narrow: fixed by adding `PATCH`/`HEAD`/`OPTIONS` and aligning body policy to RFC 9110 baseline.
+- 14) Public pool stats API missing: fixed with synchronous non-blocking `MechanicsPool::stats()` returning `MechanicsPoolStats` (worker/queue/restart snapshot) and non-blocking behavior test.
 - 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).

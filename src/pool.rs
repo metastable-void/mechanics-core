@@ -354,6 +354,31 @@ pub struct MechanicsPool {
     supervisor: Option<thread::JoinHandle<()>>,
 }
 
+/// Non-blocking snapshot of observable pool state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MechanicsPoolStats {
+    /// Whether the pool has been marked closed.
+    pub is_closed: bool,
+    /// Whether worker restarts are currently blocked by the restart guard.
+    pub restart_blocked: bool,
+    /// Desired target number of workers.
+    pub desired_workers: usize,
+    /// Number of worker handles currently tracked (including finished-but-not-yet-reaped workers).
+    pub known_workers: usize,
+    /// Number of workers that are still running (`known_workers - finished_workers_pending_reap`).
+    pub live_workers: usize,
+    /// Number of finished worker handles still present in the workers map.
+    pub finished_workers_pending_reap: usize,
+    /// Current number of queued jobs waiting for workers.
+    pub queue_depth: usize,
+    /// Queue capacity when bounded.
+    pub queue_capacity: Option<usize>,
+    /// Number of restart attempts currently remembered inside the active restart window.
+    pub restart_attempts_in_window: usize,
+    /// Maximum restarts allowed within the restart window.
+    pub max_restarts_in_window: usize,
+}
+
 impl MechanicsPool {
     fn deadline_from_timeout(timeout: Duration) -> Result<Instant, MechanicsError> {
         Instant::now().checked_add(timeout).ok_or_else(|| {
@@ -367,6 +392,35 @@ impl MechanicsPool {
             None
         } else {
             Some(deadline.duration_since(now))
+        }
+    }
+
+    /// Returns a synchronous, non-blocking snapshot of pool state.
+    ///
+    /// This method intentionally avoids worker reaping and thread joins.
+    pub fn stats(&self) -> MechanicsPoolStats {
+        let (known_workers, finished_workers_pending_reap) = {
+            let workers = self.shared.workers_read();
+            let known = workers.len();
+            let finished = workers.values().filter(|h| h.is_finished()).count();
+            (known, finished)
+        };
+        let (restart_attempts_in_window, max_restarts_in_window) = {
+            let guard = self.shared.restart_guard_guard();
+            (guard.restarts.len(), guard.max_restarts)
+        };
+
+        MechanicsPoolStats {
+            is_closed: self.shared.closed.load(Ordering::Acquire),
+            restart_blocked: self.shared.restart_blocked.load(Ordering::Acquire),
+            desired_workers: self.shared.desired_worker_count,
+            known_workers,
+            live_workers: known_workers.saturating_sub(finished_workers_pending_reap),
+            finished_workers_pending_reap,
+            queue_depth: self.shared.rx.len(),
+            queue_capacity: self.shared.rx.capacity(),
+            restart_attempts_in_window,
+            max_restarts_in_window,
         }
     }
 

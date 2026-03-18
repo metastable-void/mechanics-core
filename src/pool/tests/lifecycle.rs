@@ -210,6 +210,80 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
 }
 
 #[test]
+fn stats_is_non_blocking_with_finished_worker_handles() {
+    let (tx, rx) = bounded(1);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = Arc::new(MechanicsPoolShared {
+        tx,
+        rx,
+        exit_tx,
+        exit_rx,
+        workers: RwLock::new(HashMap::new()),
+        next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 2,
+        closed: AtomicBool::new(false),
+        restart_blocked: AtomicBool::new(true),
+        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(5), 4)),
+        execution_limits: MechanicsExecutionLimits::default(),
+        default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
+        reqwest_client: reqwest::Client::new(),
+        #[cfg(test)]
+        force_worker_runtime_init_failure: false,
+    });
+
+    {
+        let mut workers = shared.workers.write();
+        workers.insert(0, thread::spawn(|| {}));
+        workers.insert(
+            1,
+            thread::spawn(|| thread::sleep(Duration::from_millis(50))),
+        );
+    }
+    loop {
+        let finished = {
+            let workers = shared.workers.read();
+            workers.get(&0).map(thread::JoinHandle::is_finished)
+        };
+        if finished == Some(true) {
+            break;
+        }
+        thread::yield_now();
+    }
+
+    {
+        let mut guard = shared.restart_guard.lock();
+        assert!(guard.allow_restart(Instant::now()));
+    }
+
+    let pool = MechanicsPool {
+        shared: Arc::clone(&shared),
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(50),
+        supervisor: None,
+    };
+
+    let (done_tx, done_rx) = bounded(1);
+    thread::spawn(move || {
+        let stats = pool.stats();
+        let _ = done_tx.send(stats);
+    });
+    let stats = done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("stats should be non-blocking");
+
+    assert_eq!(stats.desired_workers, 2);
+    assert_eq!(stats.known_workers, 2);
+    assert_eq!(stats.finished_workers_pending_reap, 1);
+    assert_eq!(stats.live_workers, 1);
+    assert!(stats.restart_blocked);
+    assert_eq!(stats.restart_attempts_in_window, 1);
+    assert_eq!(stats.max_restarts_in_window, 4);
+    assert_eq!(stats.queue_capacity, Some(1));
+    assert_eq!(stats.queue_depth, 0);
+}
+
+#[test]
 fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
     let (tx, rx) = bounded(1);
     let (exit_tx, exit_rx) = bounded(8);

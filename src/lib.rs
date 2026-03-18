@@ -24,4 +24,4 @@ pub use http::{
     SlottedQueryMode, UrlParamSpec,
 };
 pub use job::{MechanicsExecutionLimits, MechanicsJob};
-pub use pool::{MechanicsPool, MechanicsPoolConfig};
+pub use pool::{MechanicsPool, MechanicsPoolConfig, MechanicsPoolStats};

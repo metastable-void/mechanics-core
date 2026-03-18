@@ -7,7 +7,7 @@
 - a worker pool for concurrent job execution.
 
 The crate API is exported from `src/lib.rs`:
-- `MechanicsPool`, `MechanicsPoolConfig`
+- `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`
 - `MechanicsJob`, `MechanicsExecutionLimits`
 - `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`
 - `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
@@ -290,6 +290,11 @@ Response-size behavior:
 - Non-blocking enqueue attempt.
 - If enqueue succeeds, it still waits for execution result (same bounded reply timeout model as `run`).
 - If queue is already full, returns `QueueFull` immediately.
+
+### `stats()`
+- Returns a synchronous, non-blocking snapshot (`MechanicsPoolStats`) of pool state.
+- Snapshot includes queue depth/capacity, worker counts, desired worker target, restart-blocked state, and restart-window counters.
+- `stats()` does not reap workers and does not join worker/supervisor threads.
 
 ### Async runtime interop
 - Rust API is intentionally synchronous (no crate-provided async `run` API) to avoid requiring Tokio or any specific async runtime.

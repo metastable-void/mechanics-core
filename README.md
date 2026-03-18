@@ -9,6 +9,7 @@ across jobs.
 
 ## What this crate provides
 - Bounded worker pool (`MechanicsPool`) for job execution.
+- Synchronous non-blocking pool state snapshots (`MechanicsPool::stats`, `MechanicsPoolStats`).
 - Per-job execution limits (`MechanicsExecutionLimits`).
 - Synthetic JS modules:
   `mechanics:endpoint` for preconfigured HTTP calls (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`),
