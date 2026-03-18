@@ -1,5 +1,29 @@
 use super::*;
 
+fn test_shared_with_channels(
+    tx: crossbeam_channel::Sender<PoolMessage>,
+    rx: crossbeam_channel::Receiver<PoolMessage>,
+    exit_tx: crossbeam_channel::Sender<WorkerExit>,
+    exit_rx: crossbeam_channel::Receiver<WorkerExit>,
+    worker_count: usize,
+    queue_capacity: usize,
+) -> Arc<MechanicsPoolShared> {
+    let config = MechanicsPoolConfig::new()
+        .with_worker_count(worker_count)
+        .with_queue_capacity(queue_capacity)
+        .with_restart_window(Duration::from_secs(1))
+        .with_max_restarts_in_window(1)
+        .with_execution_limits(MechanicsExecutionLimits::default());
+    Arc::new(MechanicsPoolShared::new(
+        &config,
+        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
+        tx,
+        rx,
+        exit_tx,
+        exit_rx,
+    ))
+}
+
 #[test]
 fn run_maps_reply_timeout_to_run_timeout() {
     let limits = MechanicsExecutionLimits {
@@ -9,7 +33,7 @@ fn run_maps_reply_timeout_to_run_timeout() {
     let pool = synthetic_pool(8, limits);
 
     {
-        let mut workers = pool.shared.workers.write();
+        let mut workers = pool.shared.workers_write();
         workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
     }
 
@@ -28,24 +52,7 @@ fn run_maps_reply_timeout_to_run_timeout() {
 fn run_timeout_can_expire_while_waiting_to_enqueue() {
     let (tx, rx) = bounded(1);
     let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx,
-        rx,
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared_with_channels(tx, rx, exit_tx, exit_rx, 1, 1);
 
     let pool = MechanicsPool {
         shared,
@@ -62,12 +69,12 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
         Value::Null,
     );
     pool.shared
-        .tx
-        .send(PoolMessage::Run(PoolJob {
-            job: queued,
-            reply: reply_tx,
-            canceled: Arc::new(AtomicBool::new(false)),
-        }))
+        .job_sender()
+        .send(PoolMessage::Run(PoolJob::new(
+            queued,
+            reply_tx,
+            Arc::new(AtomicBool::new(false)),
+        )))
         .expect("fill queue");
 
     let job = make_job(
@@ -92,12 +99,12 @@ fn run_try_enqueue_reports_queue_full_without_network_dependencies() {
         Value::Null,
     );
     pool.shared
-        .tx
-        .send(PoolMessage::Run(PoolJob {
-            job: queued,
-            reply: reply_tx,
-            canceled: Arc::new(AtomicBool::new(false)),
-        }))
+        .job_sender()
+        .send(PoolMessage::Run(PoolJob::new(
+            queued,
+            reply_tx,
+            Arc::new(AtomicBool::new(false)),
+        )))
         .expect("fill queue");
 
     let contender = make_job(
@@ -115,24 +122,7 @@ fn run_try_enqueue_reports_queue_full_without_network_dependencies() {
 fn run_reports_enqueue_timeout_without_network_dependencies() {
     let (tx, rx) = bounded(1);
     let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx,
-        rx,
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared_with_channels(tx, rx, exit_tx, exit_rx, 1, 1);
 
     let pool = MechanicsPool {
         shared,
@@ -149,12 +139,12 @@ fn run_reports_enqueue_timeout_without_network_dependencies() {
         Value::Null,
     );
     pool.shared
-        .tx
-        .send(PoolMessage::Run(PoolJob {
-            job: queued,
-            reply: reply_tx,
-            canceled: Arc::new(AtomicBool::new(false)),
-        }))
+        .job_sender()
+        .send(PoolMessage::Run(PoolJob::new(
+            queued,
+            reply_tx,
+            Arc::new(AtomicBool::new(false)),
+        )))
         .expect("fill queue");
 
     let contender = make_job(
@@ -174,24 +164,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnec
     drop(rx_disconnected);
     let (_tx_alive, rx_alive) = bounded(1);
     let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx: tx_disconnected,
-        rx: rx_alive,
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared_with_channels(tx_disconnected, rx_alive, exit_tx, exit_rx, 1, 1);
     let pool = MechanicsPool {
         shared,
         enqueue_timeout: Duration::from_millis(10),
@@ -220,24 +193,7 @@ fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnec
 fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_channel() {
     let (tx, rx) = bounded(8);
     let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx,
-        rx: rx.clone(),
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared_with_channels(tx, rx.clone(), exit_tx, exit_rx, 1, 8);
     let pool = MechanicsPool {
         shared: Arc::clone(&shared),
         enqueue_timeout: Duration::from_millis(10),

@@ -8,7 +8,6 @@ use crossbeam_channel::{
 };
 use serde_json::Value;
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -18,10 +17,7 @@ use std::{
 };
 
 use super::{
-    config::MechanicsPoolConfig,
-    restart_guard::RestartGuard,
-    shared::MechanicsPoolShared,
-    worker::{PoolJob, PoolMessage, WorkerExit},
+    config::MechanicsPoolConfig, shared::MechanicsPoolShared, worker::{PoolJob, PoolMessage},
 };
 
 /// Thread pool of script runtimes for executing [`MechanicsJob`] workloads.
@@ -87,20 +83,18 @@ impl MechanicsPool {
             let finished = workers.values().filter(|h| h.is_finished()).count();
             (known, finished)
         };
-        let (restart_attempts_in_window, max_restarts_in_window) = {
-            let guard = self.shared.restart_guard_guard();
-            (guard.restarts.len(), guard.max_restarts)
-        };
+        let (restart_attempts_in_window, max_restarts_in_window) =
+            self.shared.restart_guard_snapshot();
 
         MechanicsPoolStats {
-            is_closed: self.shared.closed.load(Ordering::Acquire),
-            restart_blocked: self.shared.restart_blocked.load(Ordering::Acquire),
-            desired_workers: self.shared.desired_worker_count,
+            is_closed: self.shared.is_closed(),
+            restart_blocked: self.shared.is_restart_blocked(),
+            desired_workers: self.shared.desired_worker_count(),
             known_workers,
             live_workers: known_workers.saturating_sub(finished_workers_pending_reap),
             finished_workers_pending_reap,
-            queue_depth: self.shared.rx.len(),
-            queue_capacity: self.shared.rx.capacity(),
+            queue_depth: self.shared.queue_depth(),
+            queue_capacity: self.shared.queue_capacity(),
             restart_attempts_in_window,
             max_restarts_in_window,
         }
@@ -128,37 +122,24 @@ impl MechanicsPool {
         };
 
         let (tx, rx) = bounded(config.queue_capacity);
-        let (exit_tx, exit_rx) = unbounded::<WorkerExit>();
+        let (exit_tx, exit_rx) = unbounded();
 
-        let shared = Arc::new(MechanicsPoolShared {
+        let shared = Arc::new(MechanicsPoolShared::new(
+            &config,
+            endpoint_http_client,
             tx,
             rx,
             exit_tx,
             exit_rx,
-            workers: parking_lot::RwLock::new(HashMap::new()),
-            next_worker_id: std::sync::atomic::AtomicUsize::new(0),
-            desired_worker_count: config.worker_count,
-            closed: std::sync::atomic::AtomicBool::new(false),
-            restart_blocked: std::sync::atomic::AtomicBool::new(false),
-            restart_guard: parking_lot::Mutex::new(RestartGuard::new(
-                config.restart_window,
-                config.max_restarts_in_window,
-            )),
-            execution_limits: config.execution_limits,
-            default_http_timeout_ms: config.default_http_timeout_ms,
-            default_http_response_max_bytes: config.default_http_response_max_bytes,
-            endpoint_http_client,
-            #[cfg(test)]
-            force_worker_runtime_init_failure: config.force_worker_runtime_init_failure,
-        });
+        ));
 
-        for _ in 0..config.worker_count {
+        for _ in 0..config.worker_count() {
             MechanicsPoolShared::spawn_worker(&shared)?;
         }
 
         let supervisor_shared = Arc::clone(&shared);
         let (supervisor_shutdown_tx, supervisor_shutdown_rx) = bounded::<()>(1);
-        let reconcile_tick = tick(Self::reconcile_interval(config.restart_window));
+        let reconcile_tick = tick(Self::reconcile_interval(config.restart_window()));
         let supervisor = thread::Builder::new()
             .name("mechanics-supervisor".to_owned())
             .spawn(move || {
@@ -167,15 +148,15 @@ impl MechanicsPool {
                         recv(supervisor_shutdown_rx) -> _ => {
                             break;
                         }
-                        recv(supervisor_shared.exit_rx) -> event => {
+                        recv(supervisor_shared.worker_exit_receiver()) -> event => {
                             match event {
                                 Ok(event) => {
                                     let maybe_old = {
                                         let mut workers = supervisor_shared.workers_write();
-                                        workers.remove(&event.worker_id)
+                                        workers.remove(&event.worker_id())
                                     };
                                     if let Some(handle) = maybe_old {
-                                        let _ = handle.join.join();
+                                        handle.join();
                                     }
                                 }
                                 Err(_) => break,
@@ -184,7 +165,7 @@ impl MechanicsPool {
                         recv(reconcile_tick) -> _ => {}
                     }
 
-                    if supervisor_shared.closed.load(Ordering::Acquire) {
+                    if supervisor_shared.is_closed() {
                         break;
                     }
                     MechanicsPoolShared::reconcile_workers(&supervisor_shared);
@@ -196,8 +177,8 @@ impl MechanicsPool {
 
         Ok(Self {
             shared,
-            enqueue_timeout: config.enqueue_timeout,
-            run_timeout: config.run_timeout,
+            enqueue_timeout: config.enqueue_timeout(),
+            run_timeout: config.run_timeout(),
             supervisor: Some(supervisor),
             supervisor_shutdown_tx: Some(supervisor_shutdown_tx),
         })
@@ -220,10 +201,10 @@ impl MechanicsPool {
     /// If the wait times out, the job is marked canceled before execution (best effort).
     /// Jobs that already started continue until runtime limits terminate them.
     pub fn run(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
-        if self.shared.closed.load(Ordering::Acquire) {
+        if self.shared.is_closed() {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
         }
-        if self.shared.restart_blocked.load(Ordering::Acquire) && self.shared.live_workers() == 0 {
+        if self.shared.is_restart_blocked() && self.shared.live_workers() == 0 {
             return Err(MechanicsError::worker_unavailable(
                 "all workers are unavailable and restart guard is active",
             ));
@@ -232,11 +213,7 @@ impl MechanicsPool {
         let deadline = Self::deadline_from_timeout(self.run_timeout)?;
         let (reply_tx, reply_rx) = bounded(1);
         let canceled = Arc::new(AtomicBool::new(false));
-        let message = PoolMessage::Run(PoolJob {
-            job,
-            reply: reply_tx,
-            canceled: Arc::clone(&canceled),
-        });
+        let message = PoolMessage::Run(PoolJob::new(job, reply_tx, Arc::clone(&canceled)));
 
         let Some(remaining_for_enqueue) = Self::remaining_to_deadline(deadline) else {
             canceled.store(true, Ordering::Release);
@@ -246,19 +223,19 @@ impl MechanicsPool {
         };
         let enqueue_wait = self.enqueue_timeout.min(remaining_for_enqueue);
         let limited_by_run_timeout = enqueue_wait == remaining_for_enqueue;
-        match self.shared.tx.send_timeout(message, enqueue_wait) {
+        match self.shared.job_sender().send_timeout(message, enqueue_wait) {
             Ok(()) => {}
             Err(SendTimeoutError::Timeout(PoolMessage::Run(pool_job))) => {
                 if limited_by_run_timeout {
-                    pool_job.canceled.store(true, Ordering::Release);
-                    let _ = pool_job.reply.send(Err(MechanicsError::run_timeout(
+                    pool_job.mark_canceled();
+                    pool_job.send_result(Err(MechanicsError::run_timeout(
                         "run timeout elapsed while waiting to enqueue",
                     )));
                     return Err(MechanicsError::run_timeout(
                         "run timeout elapsed while waiting to enqueue",
                     ));
                 }
-                let _ = pool_job.reply.send(Err(MechanicsError::queue_timeout(
+                pool_job.send_result(Err(MechanicsError::queue_timeout(
                     "enqueue timed out because queue is full",
                 )));
                 return Err(MechanicsError::queue_timeout(
@@ -299,10 +276,10 @@ impl MechanicsPool {
     ///
     /// Returns [`MechanicsError::QueueFull`] immediately if the queue is currently full.
     pub fn run_try_enqueue(&self, job: MechanicsJob) -> Result<Value, MechanicsError> {
-        if self.shared.closed.load(Ordering::Acquire) {
+        if self.shared.is_closed() {
             return Err(MechanicsError::pool_closed("runtime pool is closed"));
         }
-        if self.shared.restart_blocked.load(Ordering::Acquire) && self.shared.live_workers() == 0 {
+        if self.shared.is_restart_blocked() && self.shared.live_workers() == 0 {
             return Err(MechanicsError::worker_unavailable(
                 "all workers are unavailable and restart guard is active",
             ));
@@ -311,13 +288,9 @@ impl MechanicsPool {
         let deadline = Self::deadline_from_timeout(self.run_timeout)?;
         let (reply_tx, reply_rx) = bounded(1);
         let canceled = Arc::new(AtomicBool::new(false));
-        let message = PoolMessage::Run(PoolJob {
-            job,
-            reply: reply_tx,
-            canceled: Arc::clone(&canceled),
-        });
+        let message = PoolMessage::Run(PoolJob::new(job, reply_tx, Arc::clone(&canceled)));
 
-        match self.shared.tx.try_send(message) {
+        match self.shared.job_sender().try_send(message) {
             Ok(()) => {}
             Err(TrySendError::Full(PoolMessage::Run(_))) => {
                 return Err(MechanicsError::queue_full("queue is full"));

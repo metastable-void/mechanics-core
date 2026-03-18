@@ -13,7 +13,7 @@ pub(crate) use restart_guard::RestartGuard;
 #[cfg(test)]
 pub(crate) use shared::MechanicsPoolShared;
 #[cfg(test)]
-pub(crate) use worker::{PoolJob, PoolMessage, WorkerHandle};
+pub(crate) use worker::{PoolJob, PoolMessage, WorkerExit, WorkerHandle};
 
 #[cfg(test)]
 mod tests;

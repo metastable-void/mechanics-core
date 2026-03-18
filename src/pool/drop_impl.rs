@@ -1,17 +1,16 @@
 use crate::error::MechanicsError;
 use crossbeam_channel::TryRecvError;
-use std::sync::atomic::Ordering;
 
 use super::{api::MechanicsPool, worker::PoolMessage};
 
 impl Drop for MechanicsPool {
     fn drop(&mut self) {
-        self.shared.closed.store(true, Ordering::Release);
+        self.shared.mark_closed();
 
         loop {
-            match self.shared.rx.try_recv() {
+            match self.shared.job_receiver().try_recv() {
                 Ok(PoolMessage::Run(job)) => {
-                    let _ = job.reply.send(Err(MechanicsError::canceled(
+                    job.send_result(Err(MechanicsError::canceled(
                         "pool dropped before job execution",
                     )));
                 }
@@ -23,7 +22,7 @@ impl Drop for MechanicsPool {
         {
             let workers = self.shared.workers_read();
             for handle in workers.values() {
-                let _ = handle.shutdown_tx.send(());
+                handle.request_shutdown();
             }
         }
 
@@ -37,7 +36,7 @@ impl Drop for MechanicsPool {
 
         let mut workers = self.shared.workers_write();
         for (_, handle) in workers.drain() {
-            let _ = handle.join.join();
+            handle.join();
         }
     }
 }

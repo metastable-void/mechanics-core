@@ -5,7 +5,6 @@ use crate::{
     http::ReqwestEndpointHttpClient,
 };
 use crossbeam_channel::bounded;
-use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
@@ -13,7 +12,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{
     Arc, Barrier,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::AtomicBool,
 };
 use std::thread;
 use std::time::{Duration, Instant};
@@ -134,29 +133,27 @@ fn synthetic_pool(
 ) -> MechanicsPool {
     let (tx, rx) = bounded(queue_capacity);
     let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
+    let config = MechanicsPoolConfig::new()
+        .with_worker_count(1)
+        .with_queue_capacity(queue_capacity)
+        .with_enqueue_timeout(Duration::from_millis(10))
+        .with_run_timeout(Duration::from_millis(50))
+        .with_execution_limits(execution_limits)
+        .with_restart_window(Duration::from_secs(1))
+        .with_max_restarts_in_window(1);
+    let shared = Arc::new(MechanicsPoolShared::new(
+        &config,
+        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         tx,
         rx,
         exit_tx,
         exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits,
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    ));
 
     MechanicsPool {
         shared,
-        enqueue_timeout: Duration::from_millis(10),
-        run_timeout: Duration::from_millis(50),
+        enqueue_timeout: config.enqueue_timeout(),
+        run_timeout: config.run_timeout(),
         supervisor: None,
         supervisor_shutdown_tx: None,
     }

@@ -5,9 +5,9 @@ use std::{
 
 #[derive(Debug)]
 pub(crate) struct RestartGuard {
-    pub(crate) window: Duration,
-    pub(crate) max_restarts: usize,
-    pub(crate) restarts: VecDeque<Instant>,
+    window: Duration,
+    max_restarts: usize,
+    restarts: VecDeque<Instant>,
 }
 
 impl RestartGuard {
@@ -33,5 +33,13 @@ impl RestartGuard {
         }
         self.restarts.push_back(now);
         true
+    }
+
+    pub(crate) fn restart_attempts_in_window(&self) -> usize {
+        self.restarts.len()
+    }
+
+    pub(crate) fn max_restarts_in_window(&self) -> usize {
+        self.max_restarts
     }
 }

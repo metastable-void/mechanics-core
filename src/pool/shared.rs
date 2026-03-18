@@ -3,7 +3,7 @@ use crate::{
     runtime::RuntimeInternal,
 };
 use crossbeam_channel::{Receiver, Sender, bounded, select};
-use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::{
     collections::HashMap,
     sync::{
@@ -15,31 +15,63 @@ use std::{
 };
 
 use super::{
+    config::MechanicsPoolConfig,
     restart_guard::RestartGuard,
     worker::{PoolMessage, WorkerExit, WorkerHandle},
 };
 
 #[derive(Debug)]
 pub(crate) struct MechanicsPoolShared {
-    pub(crate) tx: Sender<PoolMessage>,
-    pub(crate) rx: Receiver<PoolMessage>,
-    pub(crate) exit_tx: Sender<WorkerExit>,
-    pub(crate) exit_rx: Receiver<WorkerExit>,
-    pub(crate) workers: RwLock<HashMap<usize, WorkerHandle>>,
-    pub(crate) next_worker_id: AtomicUsize,
-    pub(crate) desired_worker_count: usize,
-    pub(crate) closed: AtomicBool,
-    pub(crate) restart_blocked: AtomicBool,
-    pub(crate) restart_guard: Mutex<RestartGuard>,
-    pub(crate) execution_limits: MechanicsExecutionLimits,
-    pub(crate) default_http_timeout_ms: Option<u64>,
-    pub(crate) default_http_response_max_bytes: Option<usize>,
-    pub(crate) endpoint_http_client: Arc<dyn EndpointHttpClient>,
+    tx: Sender<PoolMessage>,
+    rx: Receiver<PoolMessage>,
+    exit_tx: Sender<WorkerExit>,
+    exit_rx: Receiver<WorkerExit>,
+    workers: RwLock<HashMap<usize, WorkerHandle>>,
+    next_worker_id: AtomicUsize,
+    desired_worker_count: usize,
+    closed: AtomicBool,
+    restart_blocked: AtomicBool,
+    restart_guard: Mutex<RestartGuard>,
+    execution_limits: MechanicsExecutionLimits,
+    default_http_timeout_ms: Option<u64>,
+    default_http_response_max_bytes: Option<usize>,
+    endpoint_http_client: Arc<dyn EndpointHttpClient>,
     #[cfg(test)]
     pub(crate) force_worker_runtime_init_failure: bool,
 }
 
 impl MechanicsPoolShared {
+    pub(crate) fn new(
+        config: &MechanicsPoolConfig,
+        endpoint_http_client: Arc<dyn EndpointHttpClient>,
+        tx: Sender<PoolMessage>,
+        rx: Receiver<PoolMessage>,
+        exit_tx: Sender<WorkerExit>,
+        exit_rx: Receiver<WorkerExit>,
+    ) -> Self {
+        Self {
+            tx,
+            rx,
+            exit_tx,
+            exit_rx,
+            workers: parking_lot::RwLock::new(HashMap::new()),
+            next_worker_id: AtomicUsize::new(0),
+            desired_worker_count: config.worker_count(),
+            closed: AtomicBool::new(false),
+            restart_blocked: AtomicBool::new(false),
+            restart_guard: parking_lot::Mutex::new(RestartGuard::new(
+                config.restart_window(),
+                config.max_restarts_in_window(),
+            )),
+            execution_limits: config.execution_limits(),
+            default_http_timeout_ms: config.default_http_timeout_ms(),
+            default_http_response_max_bytes: config.default_http_response_max_bytes(),
+            endpoint_http_client,
+            #[cfg(test)]
+            force_worker_runtime_init_failure: config.force_worker_runtime_init_failure,
+        }
+    }
+
     pub(crate) fn workers_read(&self) -> RwLockReadGuard<'_, HashMap<usize, WorkerHandle>> {
         self.workers.read()
     }
@@ -48,8 +80,57 @@ impl MechanicsPoolShared {
         self.workers.write()
     }
 
-    pub(crate) fn restart_guard_guard(&self) -> MutexGuard<'_, RestartGuard> {
-        self.restart_guard.lock()
+    pub(crate) fn restart_guard_snapshot(&self) -> (usize, usize) {
+        let guard = self.restart_guard.lock();
+        (
+            guard.restart_attempts_in_window(),
+            guard.max_restarts_in_window(),
+        )
+    }
+
+    pub(crate) fn mark_closed(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_restart_blocked(&self) -> bool {
+        self.restart_blocked.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_restart_blocked(&self, blocked: bool) {
+        self.restart_blocked.store(blocked, Ordering::Release);
+    }
+
+    pub(crate) fn desired_worker_count(&self) -> usize {
+        self.desired_worker_count
+    }
+
+    pub(crate) fn queue_depth(&self) -> usize {
+        self.rx.len()
+    }
+
+    pub(crate) fn queue_capacity(&self) -> Option<usize> {
+        self.rx.capacity()
+    }
+
+    pub(crate) fn job_sender(&self) -> &Sender<PoolMessage> {
+        &self.tx
+    }
+
+    pub(crate) fn job_receiver(&self) -> &Receiver<PoolMessage> {
+        &self.rx
+    }
+
+    pub(crate) fn worker_exit_receiver(&self) -> &Receiver<WorkerExit> {
+        &self.exit_rx
+    }
+
+    pub(crate) fn record_restart_attempt(&self, now: Instant) -> bool {
+        let mut guard = self.restart_guard.lock();
+        guard.allow_restart(now)
     }
 
     fn remove_worker_handle(&self, worker_id: usize) -> Option<WorkerHandle> {
@@ -79,7 +160,7 @@ impl MechanicsPoolShared {
             }
         }
         for handle in finished_handles {
-            let _ = handle.join.join();
+            handle.join();
         }
     }
 
@@ -133,21 +214,23 @@ impl MechanicsPoolShared {
                             recv(rx) -> msg => {
                                 match msg {
                                     Ok(PoolMessage::Run(pool_job)) => {
-                                        if pool_job.canceled.load(Ordering::Acquire) {
-                                            let _ = pool_job.reply.send(Err(MechanicsError::canceled(
+                                        if pool_job.is_canceled() {
+                                            pool_job.send_result(Err(MechanicsError::canceled(
                                                 "job timed out before execution",
                                             )));
                                             continue;
                                         }
+                                        let reply = pool_job.reply_sender();
+                                        let job = pool_job.into_job();
                                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            runtime.run_source(pool_job.job)
+                                            runtime.run_source(job)
                                         }));
                                         match result {
                                             Ok(result) => {
-                                                let _ = pool_job.reply.send(result);
+                                                let _ = reply.send(result);
                                             }
                                             Err(_) => {
-                                                let _ = pool_job.reply.send(Err(MechanicsError::panic(
+                                                let _ = reply.send(Err(MechanicsError::panic(
                                                     "worker panicked while running job",
                                                 )));
                                                 break;
@@ -163,11 +246,11 @@ impl MechanicsPoolShared {
 
                 if run.is_err() {
                     let _ = ready_tx.send(Err(MechanicsError::panic("worker panicked during startup")));
-                    let _ = exit_tx.send(WorkerExit { worker_id });
+                    let _ = exit_tx.send(WorkerExit::new(worker_id));
                     return;
                 }
 
-                let _ = exit_tx.send(WorkerExit { worker_id });
+                let _ = exit_tx.send(WorkerExit::new(worker_id));
             })
             .map_err(|e| {
                 MechanicsError::runtime_pool(format!("failed to spawn worker thread: {e}"))
@@ -177,27 +260,24 @@ impl MechanicsPoolShared {
             let mut workers = shared.workers_write();
             workers.insert(
                 worker_id,
-                WorkerHandle {
-                    join: handle,
-                    shutdown_tx,
-                },
+                WorkerHandle::new(handle, shutdown_tx),
             );
         }
 
         match ready_rx.recv() {
             Ok(Ok(())) => {
-                shared.restart_blocked.store(false, Ordering::Release);
+                shared.set_restart_blocked(false);
                 Ok(worker_id)
             }
             Ok(Err(err)) => {
                 if let Some(handle) = shared.remove_worker_handle(worker_id) {
-                    let _ = handle.join.join();
+                    handle.join();
                 }
                 Err(err)
             }
             Err(_) => {
                 if let Some(handle) = shared.remove_worker_handle(worker_id) {
-                    let _ = handle.join.join();
+                    handle.join();
                 }
                 Err(MechanicsError::runtime_pool(
                     "worker exited before startup completed",
@@ -212,30 +292,27 @@ impl MechanicsPoolShared {
     }
 
     pub(crate) fn reconcile_workers(shared: &Arc<Self>) {
-        if shared.closed.load(Ordering::Acquire) {
+        if shared.is_closed() {
             return;
         }
 
         let live = shared.live_workers();
-        let missing = shared.desired_worker_count.saturating_sub(live);
+        let missing = shared.desired_worker_count().saturating_sub(live);
         if missing == 0 {
-            shared.restart_blocked.store(false, Ordering::Release);
+            shared.set_restart_blocked(false);
             return;
         }
 
         for _ in 0..missing {
             let now = Instant::now();
-            let can_restart = {
-                let mut guard = shared.restart_guard_guard();
-                guard.allow_restart(now)
-            };
+            let can_restart = shared.record_restart_attempt(now);
             if !can_restart {
-                shared.restart_blocked.store(true, Ordering::Release);
+                shared.set_restart_blocked(true);
                 return;
             }
 
             if MechanicsPoolShared::spawn_worker(shared).is_err() {
-                shared.restart_blocked.store(true, Ordering::Release);
+                shared.set_restart_blocked(true);
                 return;
             }
         }

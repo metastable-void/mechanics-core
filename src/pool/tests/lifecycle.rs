@@ -1,5 +1,24 @@
 use super::*;
 
+fn test_shared(worker_count: usize, queue_capacity: usize) -> Arc<MechanicsPoolShared> {
+    let (tx, rx) = bounded(queue_capacity);
+    let (exit_tx, exit_rx) = bounded(8);
+    let config = MechanicsPoolConfig::new()
+        .with_worker_count(worker_count)
+        .with_queue_capacity(queue_capacity)
+        .with_restart_window(Duration::from_secs(1))
+        .with_max_restarts_in_window(4)
+        .with_execution_limits(MechanicsExecutionLimits::default());
+    Arc::new(MechanicsPoolShared::new(
+        &config,
+        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
+        tx,
+        rx,
+        exit_tx,
+        exit_rx,
+    ))
+}
+
 #[test]
 fn pool_new_rejects_invalid_config() {
     let err = match MechanicsPool::new(MechanicsPoolConfig {
@@ -88,7 +107,7 @@ fn pool_new_fails_promptly_when_many_workers_fail_startup() {
 #[test]
 fn run_and_run_try_enqueue_fail_when_pool_closed() {
     let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
-    pool.shared.closed.store(true, Ordering::Release);
+    pool.shared.mark_closed();
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
@@ -109,7 +128,7 @@ fn run_and_run_try_enqueue_fail_when_pool_closed() {
 #[test]
 fn run_and_run_try_enqueue_fail_when_workers_unavailable_and_restart_blocked() {
     let pool = synthetic_pool(8, MechanicsExecutionLimits::default());
-    pool.shared.restart_blocked.store(true, Ordering::Release);
+    pool.shared.set_restart_blocked(true);
 
     let job = make_job(
         r#"export default function main() { return 1; }"#,
@@ -138,12 +157,12 @@ fn drop_cancels_queued_jobs() {
         Value::Null,
     );
     pool.shared
-        .tx
-        .send(PoolMessage::Run(PoolJob {
+        .job_sender()
+        .send(PoolMessage::Run(PoolJob::new(
             job,
-            reply: reply_tx,
-            canceled: Arc::new(AtomicBool::new(false)),
-        }))
+            reply_tx,
+            Arc::new(AtomicBool::new(false)),
+        )))
         .expect("enqueue queued job");
 
     drop(pool);
@@ -155,35 +174,16 @@ fn drop_cancels_queued_jobs() {
 
 #[test]
 fn drop_does_not_block_when_workers_map_contains_finished_threads() {
-    let (tx, rx) = bounded(1);
-    let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx,
-        rx,
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 2,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared(2, 1);
 
     {
-        let mut workers = shared.workers.write();
+        let mut workers = shared.workers_write();
         workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
         workers.insert(1, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
     }
     loop {
         let all_finished = {
-            let workers = shared.workers.read();
+            let workers = shared.workers_read();
             workers.values().all(WorkerHandle::is_finished)
         };
         if all_finished {
@@ -212,29 +212,11 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
 
 #[test]
 fn stats_is_non_blocking_with_finished_worker_handles() {
-    let (tx, rx) = bounded(1);
-    let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx,
-        rx,
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 2,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(true),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(5), 4)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared(2, 1);
+    shared.set_restart_blocked(true);
 
     {
-        let mut workers = shared.workers.write();
+        let mut workers = shared.workers_write();
         workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
         workers.insert(
             1,
@@ -245,7 +227,7 @@ fn stats_is_non_blocking_with_finished_worker_handles() {
     }
     loop {
         let finished = {
-            let workers = shared.workers.read();
+            let workers = shared.workers_read();
             workers.get(&0).map(WorkerHandle::is_finished)
         };
         if finished == Some(true) {
@@ -254,10 +236,7 @@ fn stats_is_non_blocking_with_finished_worker_handles() {
         thread::yield_now();
     }
 
-    {
-        let mut guard = shared.restart_guard.lock();
-        assert!(guard.allow_restart(Instant::now()));
-    }
+    assert!(shared.record_restart_attempt(Instant::now()));
 
     let pool = MechanicsPool {
         shared: Arc::clone(&shared),
@@ -289,30 +268,11 @@ fn stats_is_non_blocking_with_finished_worker_handles() {
 
 #[test]
 fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
-    let (tx, rx) = bounded(1);
-    let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
-        tx,
-        rx,
-        exit_tx,
-        exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(false),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    let shared = test_shared(1, 1);
 
     let blocker = thread::spawn(|| thread::sleep(Duration::from_millis(200)));
     {
-        let mut workers = shared.workers.write();
+        let mut workers = shared.workers_write();
         workers.insert(0, WorkerHandle::from_join_for_test(blocker));
     }
 
@@ -323,12 +283,12 @@ fn drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving() {
         Value::Null,
     );
     shared
-        .tx
-        .send(PoolMessage::Run(PoolJob {
-            job: queued_job,
-            reply: reply_tx,
-            canceled: Arc::new(AtomicBool::new(false)),
-        }))
+        .job_sender()
+        .send(PoolMessage::Run(PoolJob::new(
+            queued_job,
+            reply_tx,
+            Arc::new(AtomicBool::new(false)),
+        )))
         .expect("fill queue");
 
     let pool = MechanicsPool {
@@ -364,48 +324,42 @@ fn restart_guard_blocks_after_limit() {
 fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
     let (tx, rx) = bounded(1);
     let (exit_tx, exit_rx) = bounded(8);
-    let shared = Arc::new(MechanicsPoolShared {
+    let config = MechanicsPoolConfig::new()
+        .with_worker_count(1)
+        .with_queue_capacity(1)
+        .with_restart_window(Duration::from_millis(20))
+        .with_max_restarts_in_window(1)
+        .with_execution_limits(MechanicsExecutionLimits::default());
+    let shared = Arc::new(MechanicsPoolShared::new(
+        &config,
+        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
         tx,
         rx,
         exit_tx,
         exit_rx,
-        workers: RwLock::new(HashMap::new()),
-        next_worker_id: AtomicUsize::new(0),
-        desired_worker_count: 1,
-        closed: AtomicBool::new(false),
-        restart_blocked: AtomicBool::new(true),
-        restart_guard: Mutex::new(RestartGuard::new(Duration::from_millis(20), 1)),
-        execution_limits: MechanicsExecutionLimits::default(),
-        default_http_timeout_ms: None,
-        default_http_response_max_bytes: None,
-        endpoint_http_client: Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
-        #[cfg(test)]
-        force_worker_runtime_init_failure: false,
-    });
+    ));
+    shared.set_restart_blocked(true);
 
-    {
-        let mut guard = shared.restart_guard.lock();
-        assert!(guard.allow_restart(Instant::now()));
-    }
+    assert!(shared.record_restart_attempt(Instant::now()));
 
     MechanicsPoolShared::reconcile_workers(&shared);
     assert_eq!(shared.live_workers(), 0);
-    assert!(shared.restart_blocked.load(Ordering::Acquire));
+    assert!(shared.is_restart_blocked());
 
     thread::sleep(Duration::from_millis(30));
     MechanicsPoolShared::reconcile_workers(&shared);
     assert_eq!(shared.live_workers(), 1);
-    assert!(!shared.restart_blocked.load(Ordering::Acquire));
+    assert!(!shared.is_restart_blocked());
 
-    shared.closed.store(true, Ordering::Release);
+    shared.mark_closed();
     {
-        let workers = shared.workers.read();
+        let workers = shared.workers_read();
         for handle in workers.values() {
-            let _ = handle.shutdown_tx.send(());
+            handle.request_shutdown();
         }
     }
-    let mut workers = shared.workers.write();
+    let mut workers = shared.workers_write();
     for (_, handle) in workers.drain() {
-        let _ = handle.join.join();
+        handle.join();
     }
 }

@@ -21,20 +21,6 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- 24) Internal pool state structs expose wide `pub(crate)` field surfaces, increasing cross-module coupling
-  - Severity: low
-  - Type: encapsulation / maintainability
-  - Evidence:
-  - `MechanicsPoolShared` has many `pub(crate)` fields in `src/pool/shared.rs`.
-  - `RestartGuard` exposes internal state (`window`, `max_restarts`, `restarts`) as `pub(crate)` in `src/pool/restart_guard.rs`.
-  - `WorkerHandle`, `PoolJob`, and `WorkerExit` also expose internals via `pub(crate)` fields in `src/pool/worker.rs`.
-  - Risk:
-  - Invariant ownership is diffuse and easier to accidentally violate during future changes.
-  - Refactors become riskier because multiple modules can mutate internal state directly.
-  - Proposed direction:
-  - Reduce field visibility to private and add narrow accessor/mutator methods for required interactions.
-  - Keep read-only stats access via dedicated methods rather than direct structure reads.
-
 - 25) Redundant invariant checks persist on hot paths after prepared endpoint caching
   - Severity: low
   - Type: redundant code / performance
@@ -89,3 +75,4 @@ Update this section on code additions.
 - 21) Per-worker Tokio runtime footprint scaling with worker count: documented as an intended design limitation (isolation-first worker model), not an immediate bug.
 - 22) Transport abstraction reqwest leak: fixed by introducing crate-owned transport-neutral endpoint types (`EndpointHttpHeaders`, string URL in `EndpointHttpRequest`) and confining reqwest conversions to `ReqwestEndpointHttpClient`; tests updated and passing.
 - 23) Public mutable core config/job fields bypassed invariants: fixed by tightening external field visibility (`pub(crate)`), adding validated public constructors/builders (`MechanicsJob::new`, `MechanicsExecutionLimits::new`, `MechanicsPoolConfig` builder methods), and centralizing pool-config validation while preserving JSON-first serde ingestion semantics.
+- 24) Internal pool state overexposed via wide `pub(crate)` fields: fixed by making `RestartGuard`, `PoolJob`, `WorkerExit`, `WorkerHandle`, and `MechanicsPoolShared` fields private and introducing narrow methods (`job_sender`, `mark_closed`, restart snapshots/recording, worker shutdown/join helpers, etc.); pool logic/tests now use these accessors instead of direct mutation.
