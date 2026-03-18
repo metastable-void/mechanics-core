@@ -152,6 +152,7 @@ fn drop_does_not_block_when_workers_map_contains_finished_threads() {
         exit_rx,
         workers: RwLock::new(HashMap::new()),
         next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 2,
         closed: AtomicBool::new(false),
         restart_blocked: AtomicBool::new(false),
         restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
@@ -204,4 +205,48 @@ fn restart_guard_blocks_after_limit() {
     assert!(guard.allow_restart(t0 + Duration::from_millis(100)));
     assert!(!guard.allow_restart(t0 + Duration::from_millis(200)));
     assert!(guard.allow_restart(t0 + Duration::from_secs(2)));
+}
+
+#[test]
+fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
+    let (tx, rx) = bounded(1);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = Arc::new(MechanicsPoolShared {
+        tx,
+        rx,
+        exit_tx,
+        exit_rx,
+        workers: RwLock::new(HashMap::new()),
+        next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 1,
+        closed: AtomicBool::new(false),
+        restart_blocked: AtomicBool::new(true),
+        restart_guard: Mutex::new(RestartGuard::new(Duration::from_millis(20), 1)),
+        execution_limits: MechanicsExecutionLimits::default(),
+        default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
+        reqwest_client: reqwest::Client::new(),
+        #[cfg(test)]
+        force_worker_runtime_init_failure: false,
+    });
+
+    {
+        let mut guard = shared.restart_guard.lock();
+        assert!(guard.allow_restart(Instant::now()));
+    }
+
+    MechanicsPoolShared::reconcile_workers(&shared);
+    assert_eq!(shared.live_workers(), 0);
+    assert!(shared.restart_blocked.load(Ordering::Acquire));
+
+    thread::sleep(Duration::from_millis(30));
+    MechanicsPoolShared::reconcile_workers(&shared);
+    assert_eq!(shared.live_workers(), 1);
+    assert!(!shared.restart_blocked.load(Ordering::Acquire));
+
+    let _ = shared.tx.send(PoolMessage::Shutdown);
+    let mut workers = shared.workers.write();
+    for (_, handle) in workers.drain() {
+        let _ = handle.join();
+    }
 }

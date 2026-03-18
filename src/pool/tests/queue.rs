@@ -35,6 +35,7 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
         exit_rx,
         workers: RwLock::new(HashMap::new()),
         next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 1,
         closed: AtomicBool::new(false),
         restart_blocked: AtomicBool::new(false),
         restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),

@@ -134,6 +134,7 @@ struct MechanicsPoolShared {
     exit_rx: Receiver<WorkerExit>,
     workers: RwLock<HashMap<usize, thread::JoinHandle<()>>>,
     next_worker_id: AtomicUsize,
+    desired_worker_count: usize,
     closed: AtomicBool,
     restart_blocked: AtomicBool,
     restart_guard: Mutex<RestartGuard>,
@@ -306,6 +307,36 @@ impl MechanicsPoolShared {
         self.reap_finished_workers();
         self.workers_read().len()
     }
+
+    fn reconcile_workers(shared: &Arc<Self>) {
+        if shared.closed.load(Ordering::Acquire) {
+            return;
+        }
+
+        let live = shared.live_workers();
+        let missing = shared.desired_worker_count.saturating_sub(live);
+        if missing == 0 {
+            shared.restart_blocked.store(false, Ordering::Release);
+            return;
+        }
+
+        for _ in 0..missing {
+            let now = Instant::now();
+            let can_restart = {
+                let mut guard = shared.restart_guard_guard();
+                guard.allow_restart(now)
+            };
+            if !can_restart {
+                shared.restart_blocked.store(true, Ordering::Release);
+                return;
+            }
+
+            if MechanicsPoolShared::spawn_worker(shared).is_err() {
+                shared.restart_blocked.store(true, Ordering::Release);
+                return;
+            }
+        }
+    }
 }
 
 /// Thread pool of script runtimes for executing [`MechanicsJob`] workloads.
@@ -374,6 +405,7 @@ impl MechanicsPool {
             exit_rx,
             workers: RwLock::new(HashMap::new()),
             next_worker_id: AtomicUsize::new(0),
+            desired_worker_count: config.worker_count,
             closed: AtomicBool::new(false),
             restart_blocked: AtomicBool::new(false),
             restart_guard: Mutex::new(RestartGuard::new(
@@ -413,32 +445,12 @@ impl MechanicsPool {
                             if let Some(handle) = maybe_old {
                                 let _ = handle.join();
                             }
-
-                            if supervisor_shared.closed.load(Ordering::Acquire) {
-                                continue;
-                            }
-
-                            let now = Instant::now();
-                            let can_restart = {
-                                let mut guard = supervisor_shared.restart_guard_guard();
-                                guard.allow_restart(now)
-                            };
-
-                            if can_restart {
-                                if MechanicsPoolShared::spawn_worker(&supervisor_shared).is_err() {
-                                    supervisor_shared
-                                        .restart_blocked
-                                        .store(true, Ordering::Release);
-                                }
-                            } else {
-                                supervisor_shared
-                                    .restart_blocked
-                                    .store(true, Ordering::Release);
-                            }
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
+
+                    MechanicsPoolShared::reconcile_workers(&supervisor_shared);
                 }
             })
             .map_err(|e| {

@@ -55,6 +55,13 @@ impl Queue {
         *self.deadline.borrow_mut() = deadline;
     }
 
+    pub(crate) fn clear_all(&self) {
+        self.async_jobs.borrow_mut().clear();
+        self.promise_jobs.borrow_mut().clear();
+        self.timeout_jobs.borrow_mut().clear();
+        self.generic_jobs.borrow_mut().clear();
+    }
+
     fn check_deadline(&self, context: &Context) -> JsResult<()> {
         let Some(deadline) = *self.deadline.borrow() else {
             return Ok(());

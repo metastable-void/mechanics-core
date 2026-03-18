@@ -255,6 +255,7 @@ impl RuntimeInternal {
 
         ctx.remove_data::<MechanicsState>();
         self.queue.set_deadline(None);
+        self.queue.clear_all();
         self.hooks.clear();
         ctx.enter_realm(previous_realm);
         result

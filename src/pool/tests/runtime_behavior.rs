@@ -219,3 +219,48 @@ fn oversized_execution_timeout_is_reported_as_execution_error() {
         other => panic!("unexpected error kind: {other}"),
     }
 }
+
+#[test]
+fn timed_out_job_does_not_leak_pending_timeout_tasks_into_next_job() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        execution_limits: MechanicsExecutionLimits {
+            max_execution_time: Duration::from_millis(25),
+            max_loop_iterations: 5_000_000,
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let timeout_job = make_job(
+        r#"
+            export default function main(_arg) {
+                Promise.resolve().then(() => {
+                    throw new Error("late microtask should not run in next job");
+                });
+                while (true) {}
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run(timeout_job)
+        .expect_err("job must terminate from execution limits");
+    assert!(matches!(err, MechanicsError::Execution(_)));
+
+    let clean_job = make_job(
+        r#"
+            export default function main(_arg) {
+                return 7;
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool
+        .run(clean_job)
+        .expect("next job should not execute leaked timer tasks");
+    assert_eq!(value, json!(7));
+}

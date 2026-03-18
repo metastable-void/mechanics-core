@@ -9,7 +9,7 @@ This report supersedes the previous content of this file. Prior versions are arc
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`59 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`61 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - Result: fail on style-only `clippy::derivable_impls` in `src/http.rs` (`EndpointBodyType`, `SlottedQueryMode`).
 
@@ -18,6 +18,7 @@ This report supersedes the previous content of this file. Prior versions are arc
 ### 1) Restart limiter can permanently brick the pool after a crash burst
 - Severity: high
 - Category: potential runtime bug / availability
+- Status: done (2026-03-18)
 - Evidence:
 - `restart_blocked` is set when restart attempts are blocked (`src/pool.rs:434`, `src/pool.rs:430`).
 - Restart attempts are only triggered while processing `exit_rx` events (`src/pool.rs:404` to `src/pool.rs:438`).
@@ -25,21 +26,27 @@ This report supersedes the previous content of this file. Prior versions are arc
 - `run`/`run_try_enqueue` then fail with `WorkerUnavailable` when `restart_blocked && live_workers()==0` (`src/pool.rs:469`, `src/pool.rs:553`).
 - Impact:
 - Pool may remain permanently unavailable even after `restart_window` elapses.
-- Recommendation:
-- Add time-driven retry/unblock logic in supervisor (not only event-driven on worker exits), or clear/re-evaluate `restart_blocked` when window has elapsed.
-- Add an integration test for real supervisor recovery path.
+- Resolution:
+- Added periodic worker reconciliation in supervisor loop (`MechanicsPoolShared::reconcile_workers`) so restart attempts are re-evaluated on timeout ticks, not only on new exit events.
+- Added desired worker target tracking (`desired_worker_count`) and recovery logic to refill missing workers and clear `restart_blocked` on success.
+- Verification:
+- Added regression test: `src/pool/tests/lifecycle.rs` (`reconcile_workers_recovers_after_restart_window_without_new_exit_events`).
 
 ### 2) VM job queue state can leak across job boundaries after early termination
 - Severity: high
 - Category: potential runtime bug / isolation contract
+- Status: done (2026-03-18)
 - Evidence:
 - Queue state is long-lived in `Queue` (`src/executor.rs:19` to `src/executor.rs:24`) and reused by `RuntimeInternal` (`src/runtime.rs:105`).
 - `run_source_inner` cleanup only removes context data, deadline, host hook state, and realm (`src/runtime.rs:256` to `src/runtime.rs:259`).
 - No explicit queue reset/clear exists after execution errors/timeouts.
 - Impact:
 - If `ctx.run_jobs()` returns early on timeout/error, remaining queued async/promise/timeout jobs may execute during a later job, violating per-job isolation.
-- Recommendation:
-- Add explicit queue draining/reset in `run_source_inner` finalization (success and error paths), plus regression tests.
+- Resolution:
+- Added `Queue::clear_all()` to drain async/promise/timeout/generic job queues.
+- Added runtime finalization cleanup to call `self.queue.clear_all()` in `run_source_inner` after each run (success and error).
+- Verification:
+- Added regression test: `src/pool/tests/runtime_behavior.rs` (`timed_out_job_does_not_leak_pending_timeout_tasks_into_next_job`).
 
 ### 3) `MechanicsPool::drop` can block for a long or unbounded duration
 - Severity: medium
@@ -135,7 +142,6 @@ This report supersedes the previous content of this file. Prior versions are arc
 - Panic usage observed is test-only.
 
 ## Suggested follow-up order
-1. Fix #1 and #2 first (availability/isolation).
-2. Resolve protocol/doc contradictions (#4, #5, #6).
-3. Harden lifecycle/docs/testing gaps (#3, #7, #9).
-4. Add explicit GC safety invariants (#8).
+1. Resolve protocol/doc contradictions (#4, #5, #6).
+2. Harden lifecycle/docs/testing gaps (#3, #7, #9).
+3. Add explicit GC safety invariants (#8).
