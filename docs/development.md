@@ -32,6 +32,16 @@ Recommended stricter periodic lint pass for runtime safety:
 cargo clippy --lib --all-features -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unimplemented -W clippy::dbg_macro
 ```
 
+Maximal periodic lint profile (excluding tests):
+```bash
+cargo clippy --workspace --all-features --lib --bins --examples -- -D warnings -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unimplemented -W clippy::dbg_macro
+```
+
+Current status (2026-03-18):
+- This maximal profile is feasible to run and should be run periodically.
+- It is currently non-gating and fails with many pedantic/nursery findings in non-test code, so use it as an audit signal rather than a required CI gate.
+- Keep `cargo clippy --all-targets --all-features -- -D warnings` as the blocking baseline.
+
 ## Running the example
 The example binary at `examples/test-script.rs` executes a JS module with JSON config:
 

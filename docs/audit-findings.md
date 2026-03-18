@@ -193,7 +193,11 @@ This report supersedes the previous content of this file. Prior versions are arc
 - No external-crate convenience calls with panic semantics were found in non-test runtime code paths.
 
 ### Strict lint profile notes
-- A maximal profile (`pedantic` + `nursery` + panic/unwrap families) was trialed and produced a very large volume of style-oriented findings, mostly non-critical for this crate's current conventions and test code.
+- Maximal profile command (excluding tests):
+- `cargo clippy --workspace --all-features --lib --bins --examples -- -D warnings -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unimplemented -W clippy::dbg_macro`
+- Result on 2026-03-18: failed with a large volume of diagnostics (initial run produced ~1360 lines; follow-up summarized ~90 hard errors in non-test code under maximal rules).
+- The failures are largely strict-style/convention items (`must_use`, `missing_const_for_fn`, `or_fun_call`, `future_not_send` for single-threaded Boa executor patterns, etc.), not immediate correctness bugs.
 - Recommended practical policy:
 - keep `cargo clippy --all-targets --all-features -- -D warnings` as the required gate,
-- keep a library-focused hardening pass (`--lib` + panic/unwrap/todo/unimplemented/dbg lints) in CI or periodic audits.
+- keep a library-focused hardening pass (`--lib` + panic/unwrap/todo/unimplemented/dbg lints) in CI or periodic audits,
+- run maximal profile periodically (for example weekly) as non-gating audit telemetry.
