@@ -108,6 +108,21 @@ impl HttpEndpoint {
         options: &EndpointCallOptions,
         prepared: &PreparedHttpEndpoint,
     ) -> std::io::Result<reqwest::Url> {
+        // Static endpoint invariants are validated once in `validate_config`/`prepare_runtime`.
+        // Keep cheap debug assertions here to detect any internal drift without re-running
+        // full structural checks on every call.
+        debug_assert!(
+            prepared
+                .url_slot_names
+                .iter()
+                .all(|slot| self.url_param_specs.contains_key(slot))
+        );
+        debug_assert!(
+            self.url_param_specs
+                .keys()
+                .all(|configured| prepared.url_slot_set.contains(configured))
+        );
+
         for provided in options.url_params.keys() {
             if !prepared.url_slot_set.contains(provided) {
                 return Err(Error::new(
@@ -115,26 +130,6 @@ impl HttpEndpoint {
                     format!(
                         "unknown urlParams key `{provided}` for endpoint template `{}`",
                         self.url_template
-                    ),
-                ));
-            }
-        }
-
-        for slot in &prepared.url_slot_names {
-            if !self.url_param_specs.contains_key(slot) {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("missing url_param_specs entry for slot `{slot}`"),
-                ));
-            }
-        }
-
-        for configured in self.url_param_specs.keys() {
-            if !prepared.url_slot_set.contains(configured) {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!(
-                        "url_param_specs entry `{configured}` has no placeholder in url_template"
                     ),
                 ));
             }

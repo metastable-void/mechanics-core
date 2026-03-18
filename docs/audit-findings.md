@@ -21,19 +21,6 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- 25) Redundant invariant checks persist on hot paths after prepared endpoint caching
-  - Severity: low
-  - Type: redundant code / performance
-  - Evidence:
-  - `validate_config` enforces URL/query structural invariants in `src/http/endpoint/validate.rs`.
-  - `build_url_prepared` repeats several static checks (slot spec presence and mismatch checks) in `src/http/endpoint/request.rs`.
-  - Risk:
-  - Additional per-call overhead and larger maintenance surface for logically identical checks.
-  - Potential drift if one validation path changes and the other is not kept in sync.
-  - Proposed direction:
-  - Separate one-time static validation from per-call dynamic input validation.
-  - Retain defense-in-depth where safety critical, but document and centralize any intentionally duplicated checks.
-
 - 26) Thin forwarding layer `runtime/synthetic_modules.rs` is functionally redundant
   - Severity: low
   - Type: redundant code / structure
@@ -76,3 +63,4 @@ Update this section on code additions.
 - 22) Transport abstraction reqwest leak: fixed by introducing crate-owned transport-neutral endpoint types (`EndpointHttpHeaders`, string URL in `EndpointHttpRequest`) and confining reqwest conversions to `ReqwestEndpointHttpClient`; tests updated and passing.
 - 23) Public mutable core config/job fields bypassed invariants: fixed by tightening external field visibility (`pub(crate)`), adding validated public constructors/builders (`MechanicsJob::new`, `MechanicsExecutionLimits::new`, `MechanicsPoolConfig` builder methods), and centralizing pool-config validation while preserving JSON-first serde ingestion semantics.
 - 24) Internal pool state overexposed via wide `pub(crate)` fields: fixed by making `RestartGuard`, `PoolJob`, `WorkerExit`, `WorkerHandle`, and `MechanicsPoolShared` fields private and introducing narrow methods (`job_sender`, `mark_closed`, restart snapshots/recording, worker shutdown/join helpers, etc.); pool logic/tests now use these accessors instead of direct mutation.
+- 25) Redundant per-call static endpoint invariant checks: fixed by removing duplicated slot/spec consistency scans from `build_url_prepared` hot path while keeping dynamic request-input validation, and adding `debug_assert!` invariants so internal drift is still caught in debug builds.
