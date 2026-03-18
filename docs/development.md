@@ -72,6 +72,10 @@ Runtime builtins layout:
 - Keep `src/runtime/synthetic_modules.rs` as a thin adapter that only calls the bundle helper.
 - When adding a new builtin module, add a focused file in `src/runtime/builtins/`, expose a `register(...)` function there, and wire it into `bundle_builtin_modules(...)`.
 
+Synchronization primitives policy:
+- Use `parking_lot` exclusively for `Mutex` and `RwLock` in production code.
+- Do not introduce `std::sync::Mutex` or `std::sync::RwLock` in non-test paths.
+
 When changing config validation or endpoint behavior:
 - Add or update tests under `src/http/tests/` and `src/pool/tests/`.
 - Re-check ignored endpoint network tests if the behavior involves HTTP timeout/status/size handling.
