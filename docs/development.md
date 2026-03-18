@@ -54,6 +54,11 @@ Notes:
 - `<js_path>` must export a callable default function.
 
 ## Change checklist for contributors
+Audit documentation routine (`docs/audit-findings.md`):
+- Keep active/open findings first.
+- Keep resolved findings summarized concisely at the bottom under `Done summary`.
+- When a finding is resolved, move it to `Done summary` in the same change.
+
 When changing runtime-facing behavior:
 - Keep `docs/behavior.md` aligned with actual behavior.
 - Keep `ts-types/*.d.ts` and `ts-types/README.md` policy expectations aligned for synthetic modules.

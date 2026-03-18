@@ -1,308 +1,81 @@
 # mechanics-core audit findings (2026-03-18)
 
-This report supersedes the previous content of this file. Prior versions are archived in git history.
+This report supersedes previous content of this file. Prior versions are archived in git history.
+
+## Report routine
+- Keep active/open findings first.
+- Keep resolved items only in the bottom `Done summary` section, concise (1-2 lines each).
+- When an item is resolved, move it from active findings to `Done summary` in the same change.
 
 ## Scope
+Update this section on code additions.
+
 - Runtime/pool execution paths: `src/pool.rs`, `src/runtime.rs`, `src/executor.rs`, `src/job.rs`, `src/error.rs`.
 - HTTP/config and endpoint protocol: `src/http.rs`, `src/runtime/synthetic_modules.rs`, `src/http/tests/*`, `src/pool/tests/*`.
 - Documentation/type contracts: `README.md`, `docs/behavior.md`, `ts-types/*.d.ts`.
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`69 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`77 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- Result: pass.
+- Last recorded result: pass (2026-03-18).
 
-## Findings
-
-### 1) Restart limiter can permanently brick the pool after a crash burst
-- Severity: high
-- Category: potential runtime bug / availability
-- Status: done (2026-03-18)
-- Evidence:
-- `restart_blocked` is set when restart attempts are blocked (`src/pool.rs:434`, `src/pool.rs:430`).
-- Restart attempts are only triggered while processing `exit_rx` events (`src/pool.rs:404` to `src/pool.rs:438`).
-- If all workers are already gone and rate-limit is hit, no new exit event arrives to re-attempt restart.
-- `run`/`run_try_enqueue` then fail with `WorkerUnavailable` when `restart_blocked && live_workers()==0` (`src/pool.rs:469`, `src/pool.rs:553`).
-- Impact:
-- Pool may remain permanently unavailable even after `restart_window` elapses.
-- Resolution:
-- Added periodic worker reconciliation in supervisor loop (`MechanicsPoolShared::reconcile_workers`) so restart attempts are re-evaluated on timeout ticks, not only on new exit events.
-- Added desired worker target tracking (`desired_worker_count`) and recovery logic to refill missing workers and clear `restart_blocked` on success.
-- Verification:
-- Added regression test: `src/pool/tests/lifecycle.rs` (`reconcile_workers_recovers_after_restart_window_without_new_exit_events`).
-
-### 2) VM job queue state can leak across job boundaries after early termination
-- Severity: high
-- Category: potential runtime bug / isolation contract
-- Status: done (2026-03-18)
-- Evidence:
-- Queue state is long-lived in `Queue` (`src/executor.rs:19` to `src/executor.rs:24`) and reused by `RuntimeInternal` (`src/runtime.rs:105`).
-- `run_source_inner` cleanup only removes context data, deadline, host hook state, and realm (`src/runtime.rs:256` to `src/runtime.rs:259`).
-- No explicit queue reset/clear exists after execution errors/timeouts.
-- Impact:
-- If `ctx.run_jobs()` returns early on timeout/error, remaining queued async/promise/timeout jobs may execute during a later job, violating per-job isolation.
-- Resolution:
-- Added `Queue::clear_all()` to drain async/promise/timeout/generic job queues.
-- Added runtime finalization cleanup to call `self.queue.clear_all()` in `run_source_inner` after each run (success and error).
-- Verification:
-- Added regression test: `src/pool/tests/runtime_behavior.rs` (`timed_out_job_does_not_leak_pending_timeout_tasks_into_next_job`).
-
-### 3) `MechanicsPool::drop` can block for a long or unbounded duration
-- Severity: medium
-- Category: lifecycle/runtime behavior
-- Status: done (2026-03-18)
-- Evidence:
-- `Drop` sends one `Shutdown` message per live worker using blocking `send` on bounded queue (`src/pool.rs:625` to `src/pool.rs:627`).
-- Workers only receive shutdown when they return to queue receive loop; busy workers delay consumption.
-- Impact:
-- Drop/join latency can become very long under stuck/long-running workers.
-- Resolution:
-- Removed blocking shutdown-message sends from `Drop`.
-- Worker loop now uses bounded `recv_timeout` polling and exits on observed pool-closed state.
-- Verification:
-- Added regression test: `src/pool/tests/lifecycle.rs` (`drop_does_not_block_when_queue_is_full_and_worker_is_not_receiving`).
-
-### 4) Protocol contradiction: explicit `body: null` is treated as absent, not JSON null
-- Severity: medium
-- Category: protocol contract mismatch
-- Status: done (2026-03-18)
-- Evidence:
-- Parsing maps `body: null` to `EndpointCallBody::Absent` (`src/http.rs:1011`).
-- Execution omits body when `Absent` (`src/http.rs:608`).
-- Docs currently state JSON mode accepts “any JSON-convertible JS value” (`docs/behavior.md:97` to `docs/behavior.md:100`), which implies `null` should be sendable.
-- Impact:
-- Callers cannot send explicit JSON `null` payloads on `POST`/`PUT`.
-- Resolution:
-- Changed endpoint option parsing semantics:
-- omitted/`undefined` => `EndpointCallBody::Absent`,
-- explicit `null` => `EndpointCallBody::Json(Value::Null)`.
-- Updated docs and TS declaration comments to describe the explicit null behavior and omission semantics.
-- Verification:
-- Added parser-level test: `src/http/tests/options.rs` (`parse_endpoint_call_options_treats_explicit_null_body_as_json_null`).
-- Added runtime contract test: `src/pool/tests/endpoint_validation.rs` (`endpoint_get_rejects_explicit_null_body`).
-
-### 5) Docs mismatch: non-2xx opt-in behavior is broader than documented
-- Severity: medium
-- Category: documentation contradiction
-- Status: done (2026-03-18)
-- Evidence:
-- Docs say `with_allow_non_success_status(true)` “allows JSON parsing on non-2xx” (`docs/behavior.md:90`).
-- Implementation allows normal downstream parsing according to `response_body_type` (`json`/`utf8`/`bytes`) (`src/http.rs:651`, `src/http.rs:682` to `src/http.rs:694`).
-- Impact:
-- Contract text is narrower than actual behavior.
-- Resolution:
-- Updated `docs/behavior.md` to describe non-2xx opt-in behavior as response-body-type-driven parsing, matching implementation.
-
-### 6) Docs are incomplete for optional query modes when `default` is set
-- Severity: medium
-- Category: undocumented non-obvious behavior
-- Status: done (2026-03-18)
-- Evidence:
-- Docs describe optional modes primarily as omission semantics (`docs/behavior.md:119` to `docs/behavior.md:120`).
-- Runtime resolves missing values through `default` first (`src/http.rs:884` to `src/http.rs:891`).
-- Impact:
-- Users may assume missing optional values are always omitted, which is false when default exists.
-- Resolution:
-- Updated `docs/behavior.md` with explicit slotted query resolution precedence and empty-default behavior by mode.
-
-### 7) Fail-fast constructor docs do not mention call-time `run_timeout` overflow failure
-- Severity: low
-- Category: documentation/behavior mismatch
-- Status: done (2026-03-18)
-- Evidence:
-- `MechanicsPool::new` docs describe fail-fast invalid config handling (`src/pool.rs:340` to `src/pool.rs:346`).
-- Constructor checks `run_timeout != 0` only (`src/pool.rs:358` to `src/pool.rs:360`).
-- Overflow guard is deferred to `run`/`run_try_enqueue` deadline calculation (`src/pool.rs:323` to `src/pool.rs:326`).
-- Impact:
-- A pool can construct successfully but fail every run with `RuntimePool` for extreme timeout values.
-- Resolution:
-- Added constructor-time `run_timeout` overflow validation: `MechanicsPool::new` now rejects values that cannot be represented by the current platform clock.
-- Updated behavior docs to record this fail-fast validation explicitly.
-- Verification:
-- Added config test in `src/pool/tests/lifecycle.rs` under `pool_new_rejects_invalid_config` for `run_timeout: Duration::MAX`.
-
-### 8) Unsafe tracing invariants are implicit
-- Severity: low
-- Category: undefined-behavior risk surface (future maintenance)
-- Status: done (2026-03-18)
-- Evidence:
-- `MechanicsState` uses `#[unsafe_ignore_trace]` fields (`src/runtime.rs:59`, `src/runtime.rs:62`, `src/runtime.rs:65`, `src/runtime.rs:68`) with no nearby safety rationale.
-- Impact:
-- Current code appears safe, but future refactors could accidentally violate GC tracing assumptions.
-- Resolution:
-- Added explicit `SAFETY` invariants above every `#[unsafe_ignore_trace]` field in `MechanicsState`, documenting why each field is non-GC and safe to ignore in tracing.
-
-### 9) Test coverage gaps hide several high-risk behaviors from default runs
-- Severity: medium
-- Category: testing gap
-- Status: done (2026-03-18)
-- Evidence:
-- Queue pressure/concurrency tests are ignored (`src/pool/tests/queue.rs:83`, `src/pool/tests/queue.rs:154`).
-- Network/socket integration tests are ignored by default (`src/pool/tests/endpoint_network.rs`, `src/pool/tests/internet.rs:4`).
-- No test currently exercises real supervisor recovery after hitting restart guard.
-- Impact:
-- Regressions in availability/concurrency paths can slip through normal CI.
-- Resolution:
-- Added deterministic non-network queue pressure tests that run in standard CI:
-- `run_try_enqueue_reports_queue_full_without_network_dependencies`
-- `run_reports_enqueue_timeout_without_network_dependencies`
-- Added deterministic supervisor recovery test:
-- `reconcile_workers_recovers_after_restart_window_without_new_exit_events`
-- Kept the existing ignored network/socket tests unchanged.
-
-## Requested categories explicitly checked
-
-### Undefined behavior
-- No active UB found in normal runtime paths (code is predominantly safe Rust).
-- UB risk surface exists around `#[unsafe_ignore_trace]` usage (documented above as finding #8).
-
-### Unimplemented code paths
-- No `todo!`, `unimplemented!`, or `unreachable!` found in production code under `src/`.
-- Fallback for unknown Boa job variants exists and returns runtime error (`src/executor.rs:137` to `src/executor.rs:148`).
-
-### Possible runtime panics
-- No obvious production-path `panic!/unwrap()/expect()` crash points found in `src/` runtime code paths reviewed.
-- Panic usage observed is test-only.
-
-## Suggested follow-up order
-1. Remaining medium/high findings focus on broader endpoint protocol/docs and optional integration coverage.
-
-## Additional exploration (2026-03-18)
-
-### Dead code / uncovered path scan
-- `cargo clippy --all-targets --all-features -- -W dead_code` found no dead-code warnings in runtime paths.
-- Remaining low-confidence coverage areas are mostly environmental paths (ignored socket/internet tests) plus hard-to-force disconnect branches.
-- Deterministic queue-pressure tests were added earlier and are now part of default test runs.
-- Added deterministic disconnected-channel coverage in `src/pool/tests/queue.rs`:
-- `run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnected`
-- `run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_channel`
-
-### Boa job variants audit
-- Current `boa_engine 0.21.0` `Job` enum contains only:
-- `PromiseJob`, `AsyncJob`, `TimeoutJob`, `GenericJob` (and is `#[non_exhaustive]`).
-- No currently-missing variant implementation was found for this version.
-- Runtime hardening applied:
-- unsupported/future job fallback now returns an error message including the concrete variant debug name (`src/executor.rs`), improving diagnosis if upstream introduces new variants.
-- Added compatibility harness test:
-- `executor::tests::job_routing_harness_covers_all_current_boa_job_variants` verifies explicit routing of all currently-constructible Boa variants.
-
-### Panicking external APIs / convenience methods audit
-- `cargo clippy --lib --all-features -- -W clippy::panic -W clippy::unwrap_used -W clippy::expect_used` found no production-library panicking calls.
-- `rg` scan confirmed `expect`/`panic`/`unwrap` uses in `src/` are test-only.
-- No external-crate convenience calls with panic semantics were found in non-test runtime code paths.
-
-### Strict lint profile notes
-- Maximal profile command (excluding tests):
-- `cargo clippy --workspace --all-features --lib --bins --examples -- -D warnings -W clippy::all -W clippy::pedantic -W clippy::nursery -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unimplemented -W clippy::dbg_macro`
-- Result on 2026-03-18: failed with a large volume of diagnostics (initial run produced ~1360 lines; follow-up summarized ~90 hard errors in non-test code under maximal rules).
-- The failures are largely strict-style/convention items (`must_use`, `missing_const_for_fn`, `or_fun_call`, `future_not_send` for single-threaded Boa executor patterns, etc.), not immediate correctness bugs.
-- Recommended practical policy:
-- keep `cargo clippy --all-targets --all-features -- -D warnings` as the required gate,
-- keep a library-focused hardening pass (`--lib` + panic/unwrap/todo/unimplemented/dbg lints) in CI or periodic audits,
-- run maximal profile periodically (for example weekly) as non-gating audit telemetry.
-
-## Feature-gap exploration for automation/LLM orchestration (2026-03-18)
-
-### 10) Async Rust API intentionally omitted; async interop docs were missing
-- Severity: low
-- Category: documentation gap
-- Status: done (2026-03-18)
-- Evidence:
-- Public pool API intentionally exposes synchronous calls only: `run` and `run_try_enqueue` (`src/pool.rs:486`, `src/pool.rs:565`).
-- Crate docs did not explicitly state that this is intentional to avoid assuming Tokio, or provide recommended async-runtime integration guidance.
-- Resolution:
-- Updated `docs/behavior.md` to document:
-- synchronous API is intentional,
-- synchronous methods should run under `tokio::task::spawn_blocking(...)` when called from Tokio async code,
-- current sync API does not require caller-owned Tokio runtime state.
-- Verification:
-- Added deterministic test: `src/pool/tests/runtime_behavior.rs` (`pool_run_inside_tokio_spawn_blocking_succeeds`).
-
-### 11) Endpoint response contract lacks status/metadata needed for agent policies
-- Severity: medium
-- Category: missing capability (protocol surface)
-- Status: done (2026-03-18)
-- Evidence:
-- Endpoint return object did not include HTTP status metadata.
-- Impact:
-- Agent workflows cannot branch on HTTP status code, response size, or latency unless they infer from parse errors.
-- Resolution:
-- Added `status` and `ok` to runtime endpoint response payloads:
-- Rust response model now carries `status`/`ok` alongside body/headers.
-- JS `mechanics:endpoint` response object now includes `{ body, headers, status, ok }`.
-- Updated docs and TypeScript declarations accordingly.
-- Verification:
-- Updated endpoint network tests to assert `status`/`ok` values for both success and allowed non-2xx responses.
+## Active findings
 
 ### 12) HTTP resilience policies are not first-class (retry/backoff/rate-limit)
 - Severity: medium
 - Category: missing capability (reliability)
 - Status: open
 - Evidence:
-- Endpoint config currently has timeout/size/status policy, but no retry/backoff/circuit-breaker controls (`src/http.rs:151` to `src/http.rs:170`, `src/http.rs:574` to `src/http.rs:701`).
+- Endpoint config currently has timeout/size/status policy, but no retry/backoff/circuit-breaker controls (`src/http.rs`).
 - Impact:
 - Callers must re-implement retry logic in JS modules, reducing determinism and increasing duplicated policy code.
-- Proposal:
-- Add optional per-endpoint retry policy (`max_attempts`, `base_backoff_ms`, `max_backoff_ms`, `jitter`, `retry_on_status`, `retry_on_io_errors`).
-- Include attempt metadata in endpoint response for observability.
-- Design sketch:
-- `HttpEndpoint::with_retry_policy(EndpointRetryPolicy)` with conservative defaults (`max_attempts = 1`).
+- Proposed direction:
+- Add optional endpoint retry policy (`max_attempts`, `base_backoff_ms`, `max_backoff_ms`, `jitter`, `retry_on_status`, `retry_on_io_errors`).
 - Retry only idempotent methods by default (`GET`/`HEAD`/`OPTIONS`) unless explicitly opted in for mutating methods.
 - Emit attempt metadata on response (`attempt`, `max_attempts`) and expose terminal retry reason in execution errors.
+- JSON-first requirement: policy must be fully representable in endpoint config JSON (`serde`), because parsing `MechanicsConfig` (and often whole `MechanicsJob`) from JSON is a first-class crate feature.
 
-### 13) Method support is narrow for modern API/tooling integrations
-- Severity: low
-- Category: missing capability (protocol coverage)
-- Status: done (2026-03-18)
-- Evidence:
-- Previous implementation supported only `GET/POST/PUT/DELETE`.
-- Impact:
-- Integrations requiring `PATCH`, `HEAD`, or `OPTIONS` need awkward endpoint workarounds or are blocked.
-- Resolution:
-- Extended `HttpMethod` enum and request mapping to include `PATCH`, `HEAD`, and `OPTIONS`.
-- Documented method/body policy against HTTP Semantics (RFC 9110) baseline.
-- Added deterministic tests for method deserialization/body-support matrix and validation-path body rejection behavior.
-
-### 14) No pool telemetry hooks for autoscaling and SLO-driven orchestration
+### 14) No public pool telemetry/stats API despite internal state tracking
 - Severity: medium
 - Category: missing capability (observability)
 - Status: open
 - Evidence:
-- Pool internals track signals (`restart_blocked`, worker map, queue channel), but there is no public stats/introspection API (`src/pool.rs:124` to `src/pool.rs:141`, `src/pool.rs:344` to `src/pool.rs:355`).
+- Pool tracks worker and restart state internally, but exposes no public stats snapshot API (`src/pool.rs`).
 - Impact:
-- Orchestrators cannot make informed scaling or circuit decisions from native pool state.
-- Proposal:
-- Add `MechanicsPool::stats()` snapshot (live workers, desired workers, queue depth/capacity, restart-blocked state, restart counters).
-- Optionally add callback hooks for worker crash/restart events.
-- Design sketch:
-- Introduce `MechanicsPoolStats` with monotonic counters (`jobs_submitted`, `jobs_completed`, `jobs_failed`, `worker_restarts`) and gauges (`live_workers`, `queue_depth`, `restart_blocked`).
-- Add low-overhead `MechanicsPool::stats()` snapshot method plus optional event hook registration for lifecycle events.
-
-### 15) Config ergonomics for large endpoint sets are limited
-- Severity: low
-- Category: missing capability (developer experience)
-- Status: done (2026-03-18)
-- Evidence:
-- `MechanicsConfig` originally required full-map construction and eager validation.
-- Impact:
-- Multi-tenant or staged orchestrators must build custom merge logic around the crate.
-- Resolution:
-- Added validated composition helpers on `MechanicsConfig`:
-- `with_endpoint(name, endpoint)` for validated upsert.
-- `with_endpoint_overrides(overrides)` for validated bulk patch/merge.
-- `without_endpoint(name)` for endpoint removal.
-- Explicitly documented that these helpers patch config objects before job submission, not mutable live worker runtime state.
+- Orchestrators cannot make informed scaling/circuit decisions from native pool state.
+- Proposed direction:
+- Add `MechanicsPool::stats()` snapshot with counters (`jobs_submitted`, `jobs_completed`, `jobs_failed`, `worker_restarts`) and gauges (`live_workers`, `queue_depth`, `restart_blocked`).
+- Optionally add event hooks for worker crash/restart lifecycle events.
 
 ### 16) Built-in runtime modules do not expose orchestration primitives
 - Severity: low
 - Category: missing capability (runtime expressiveness)
 - Status: open
 - Evidence:
-- Current synthetic modules are endpoint + codecs + RNG (`src/runtime/synthetic_modules.rs`, `src/lib.rs:19` to `src/lib.rs:24`).
-- No built-ins for stable id generation, structured step logging, or resumable checkpoint helpers.
+- Current synthetic modules are endpoint + codecs + RNG (`src/runtime/synthetic_modules.rs`, `src/lib.rs`).
 - Impact:
-- Users rebuild these primitives in each script set, often inconsistently.
-- Proposal:
-- Consider adding optional synthetic modules (feature-gated) for deterministic IDs, step/event emission hooks, and checkpoint serialization helpers.
-- Keep default runtime minimal by making these opt-in.
+- Users rebuild common orchestration helpers (IDs/events/checkpoints) per script set.
+- Proposed direction:
+- Consider optional feature-gated synthetic modules for deterministic IDs, step/event emission hooks, and checkpoint serialization helpers.
+
+## Additional audit notes
+- Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
+- Unimplemented code paths: no `todo!`/`unimplemented!` in production code under `src/`.
+- Panic risk: no production-path `panic!/unwrap()/expect()` crash points found in reviewed runtime code.
+
+## Done summary
+
+- 1) Restart limiter could permanently brick pool after crash burst: fixed with periodic worker reconciliation and restart recovery test.
+- 2) VM job queue state leak across job boundaries: fixed with queue cleanup after each run and isolation regression test.
+- 3) `MechanicsPool::drop` long/unbounded block risk: fixed by removing blocking shutdown-send path and validating drop behavior with tests.
+- 4) Protocol contradiction for explicit `body: null`: fixed (`null` now means JSON null; `undefined`/omitted means absent), docs/tests updated.
+- 5) Non-2xx opt-in docs mismatch: fixed docs to reflect response parsing by `response_body_type`.
+- 6) Optional query mode docs gap with defaults: fixed docs to include explicit resolution precedence and empty-default semantics.
+- 7) Constructor docs/behavior mismatch for `run_timeout` overflow: fixed with constructor-time validation and test.
+- 8) Unsafe tracing invariants were implicit: fixed by adding explicit SAFETY comments for `unsafe_ignore_trace` fields.
+- 9) Default test coverage gaps for high-risk behavior: fixed with deterministic local tests (queue pressure, restart recovery, disconnect paths).
+- 10) Async API intent not documented: fixed docs to state sync API is intentional and Tokio usage should be through `spawn_blocking`; added interop test.
+- 11) Endpoint response missing status metadata: fixed by adding `status`/`ok` fields across runtime, docs, types, and tests.
+- 13) HTTP method set too narrow: fixed by adding `PATCH`/`HEAD`/`OPTIONS` and aligning body policy to RFC 9110 baseline.
+- 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).
