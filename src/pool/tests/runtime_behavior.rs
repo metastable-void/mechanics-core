@@ -5,8 +5,8 @@ use crate::{
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn run_simple_module_returns_value() {
@@ -358,10 +358,18 @@ fn prepared_endpoint_cache_is_isolated_per_job_config() {
     "#;
 
     let first = pool
-        .run(make_job(js, endpoint_config("ep", endpoint_v1), Value::Null))
+        .run(make_job(
+            js,
+            endpoint_config("ep", endpoint_v1),
+            Value::Null,
+        ))
         .expect("run first job");
     let second = pool
-        .run(make_job(js, endpoint_config("ep", endpoint_v2), Value::Null))
+        .run(make_job(
+            js,
+            endpoint_config("ep", endpoint_v2),
+            Value::Null,
+        ))
         .expect("run second job");
 
     assert_eq!(first, json!("https://mock.local/one"));
@@ -400,7 +408,11 @@ fn endpoint_request_uses_effective_response_max_bytes_precedence() {
             js,
             endpoint_config(
                 "ep",
-                HttpEndpoint::new(HttpMethod::Get, "https://mock.local/default", HashMap::new()),
+                HttpEndpoint::new(
+                    HttpMethod::Get,
+                    "https://mock.local/default",
+                    HashMap::new(),
+                ),
             ),
             Value::Null,
         ))
@@ -412,8 +424,12 @@ fn endpoint_request_uses_effective_response_max_bytes_precedence() {
             js,
             endpoint_config(
                 "ep",
-                HttpEndpoint::new(HttpMethod::Get, "https://mock.local/override", HashMap::new())
-                    .with_response_max_bytes(Some(222)),
+                HttpEndpoint::new(
+                    HttpMethod::Get,
+                    "https://mock.local/override",
+                    HashMap::new(),
+                )
+                .with_response_max_bytes(Some(222)),
             ),
             Value::Null,
         ))
