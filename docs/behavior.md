@@ -12,14 +12,11 @@ Deployment boundary note:
 - Planned bearer-token authentication/authorization and HTTP automation-as-a-service endpoint exposure belong to an outer Rust HTTP server layer.
 - Planned metrics exporter integrations also belong to that outer service layer.
 
-The crate API is exported from `src/lib.rs`:
-- `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`
-- `MechanicsJob`, `MechanicsExecutionLimits`
-- `MechanicsConfig`, `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`
-- `EndpointHttpClient`, `ReqwestEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`
-- `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
-- `MechanicsError`
-- `MechanicsErrorKind` (`#[repr(u8)]` stable symbolic error kind)
+The crate API is exported from `src/lib.rs` by module path:
+- root: `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`, `MechanicsError`, `MechanicsErrorKind`
+- `mechanics_core::job`: `MechanicsJob`, `MechanicsExecutionLimits`, `MechanicsConfig`
+- `mechanics_core::endpoint`: `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`, `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
+- `mechanics_core::endpoint::http_client`: `EndpointHttpClient`, `ReqwestEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`, `EndpointHttpHeaders`
 
 ## High-level model
 1. You build a `MechanicsPool`.
@@ -394,9 +391,9 @@ Common user-visible trigger categories:
 ```rust
 use std::collections::HashMap;
 
-use mechanics_core::{
-    HttpEndpoint, HttpMethod, MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig,
-};
+use mechanics_core::{MechanicsPool, MechanicsPoolConfig};
+use mechanics_core::endpoint::{HttpEndpoint, HttpMethod};
+use mechanics_core::job::{MechanicsConfig, MechanicsJob};
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -423,6 +420,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let value = pool.run(job)?;
     println!("{value}");
+    Ok(())
+}
+```
+
+## Usage example (Custom HTTP client wiring)
+```rust
+use std::sync::Arc;
+
+use mechanics_core::{MechanicsPool, MechanicsPoolConfig};
+use mechanics_core::endpoint::http_client::ReqwestEndpointHttpClient;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let reqwest_client = reqwest::Client::builder().build()?;
+    let endpoint_http_client = Arc::new(ReqwestEndpointHttpClient::new(reqwest_client));
+
+    let pool_config = MechanicsPoolConfig::default().with_endpoint_http_client(endpoint_http_client);
+    let _pool = MechanicsPool::new(pool_config)?;
     Ok(())
 }
 ```

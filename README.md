@@ -19,7 +19,11 @@ across jobs.
 - Endpoint config supports JSON-deserializable resilience policy (`retry_policy`) for retries/backoff/rate-limit handling.
 - Structured error model (`MechanicsError`, marked `#[non_exhaustive]`) with stable symbolic kind enum (`MechanicsErrorKind`, `#[repr(u8)]`).
 
-Public API re-exports are in `src/lib.rs`.
+Public API is organized by module in `src/lib.rs`:
+- root: `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`, `MechanicsError`, `MechanicsErrorKind`
+- `mechanics_core::job`: `MechanicsJob`, `MechanicsExecutionLimits`, `MechanicsConfig`
+- `mechanics_core::endpoint`: `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`, `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
+- `mechanics_core::endpoint::http_client`: `EndpointHttpClient`, `ReqwestEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`, `EndpointHttpHeaders`
 
 ## Scopes
 This crate is intended to be integrated into systems as automation/orchestration layers.
@@ -83,6 +87,12 @@ Ignored tests in `src/pool/tests/endpoint_network.rs` require local socket bind 
 Run the example runner:
 ```bash
 cargo run --example test-script -- <json_config_path> <js_path>
+```
+
+Minimal Rust imports:
+```rust
+use mechanics_core::{MechanicsPool, MechanicsPoolConfig};
+use mechanics_core::job::{MechanicsConfig, MechanicsJob};
 ```
 
 Minimal files:

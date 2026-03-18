@@ -1,4 +1,7 @@
-use mechanics_core::{MechanicsConfig, MechanicsJob, MechanicsPool, MechanicsPoolConfig};
+use mechanics_core::{
+    MechanicsPool, MechanicsPoolConfig,
+    job::{MechanicsConfig, MechanicsJob},
+};
 
 fn main() -> std::io::Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
