@@ -11,7 +11,7 @@ This report supersedes previous content of this file. Prior versions are archive
 Update this section on code additions.
 
 - Runtime/pool execution paths: `src/pool.rs`, `src/runtime.rs`, `src/executor.rs`, `src/job.rs`, `src/error.rs`.
-- HTTP/config and endpoint protocol: `src/http.rs`, `src/runtime/synthetic_modules.rs`, `src/http/tests/*`, `src/pool/tests/*`.
+- HTTP/config and endpoint protocol: `src/http.rs`, `src/runtime/builtins/*.rs`, `src/http/tests/*`, `src/pool/tests/*`.
 - Documentation/type contracts: `README.md`, `docs/behavior.md`, `ts-types/*.d.ts`.
 
 ## Verification performed
@@ -21,15 +21,7 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- 26) Thin forwarding layer `runtime/synthetic_modules.rs` is functionally redundant
-  - Severity: low
-  - Type: redundant code / structure
-  - Evidence:
-  - `install_synthetic_modules` in `src/runtime/synthetic_modules.rs` only forwards to `builtins::bundle_builtin_modules`.
-  - Risk:
-  - Minor indirection and naming duplication without additional invariants or abstraction value.
-  - Proposed direction:
-  - Either remove the forwarding module and call `builtins::bundle_builtin_modules` directly, or keep it but explicitly document that it is a stable seam for future runtime module composition.
+- None currently open.
 
 ## Additional audit notes
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
@@ -64,3 +56,4 @@ Update this section on code additions.
 - 23) Public mutable core config/job fields bypassed invariants: fixed by tightening external field visibility (`pub(crate)`), adding validated public constructors/builders (`MechanicsJob::new`, `MechanicsExecutionLimits::new`, `MechanicsPoolConfig` builder methods), and centralizing pool-config validation while preserving JSON-first serde ingestion semantics.
 - 24) Internal pool state overexposed via wide `pub(crate)` fields: fixed by making `RestartGuard`, `PoolJob`, `WorkerExit`, `WorkerHandle`, and `MechanicsPoolShared` fields private and introducing narrow methods (`job_sender`, `mark_closed`, restart snapshots/recording, worker shutdown/join helpers, etc.); pool logic/tests now use these accessors instead of direct mutation.
 - 25) Redundant per-call static endpoint invariant checks: fixed by removing duplicated slot/spec consistency scans from `build_url_prepared` hot path while keeping dynamic request-input validation, and adding `debug_assert!` invariants so internal drift is still caught in debug builds.
+- 26) Redundant runtime synthetic-module forwarding layer: fixed by removing `src/runtime/synthetic_modules.rs` and calling `builtins::bundle_builtin_modules(...)` directly from `RuntimeInternal`, reducing indirection while preserving behavior.

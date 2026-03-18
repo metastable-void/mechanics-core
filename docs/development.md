@@ -78,7 +78,6 @@ When changing runtime-facing behavior:
 Runtime builtins layout:
 - Synthetic runtime modules are defined under `src/runtime/builtins/*.rs`.
 - Register all builtins from `src/runtime/builtins/mod.rs` via `bundle_builtin_modules(...)`.
-- Keep `src/runtime/synthetic_modules.rs` as a thin adapter that only calls the bundle helper.
 - When adding a new builtin module, add a focused file in `src/runtime/builtins/`, expose a `register(...)` function there, and wire it into `bundle_builtin_modules(...)`.
 
 Synchronization primitives policy:

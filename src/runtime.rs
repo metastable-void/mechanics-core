@@ -17,7 +17,6 @@ use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
 
 mod buffer_like;
 mod builtins;
-mod synthetic_modules;
 
 #[derive(Default, Debug)]
 struct RuntimeHostHooks {
@@ -185,7 +184,7 @@ impl RuntimeInternal {
                 ))
             })?;
 
-        synthetic_modules::install_synthetic_modules(&loader, &mut context);
+        builtins::bundle_builtin_modules(&loader, &mut context);
 
         Ok(Self {
             ctx: context,
@@ -232,7 +231,7 @@ impl RuntimeInternal {
         let ctx = &mut self.ctx;
         let isolated_realm = ctx.create_realm()?;
         let previous_realm = ctx.enter_realm(isolated_realm);
-        synthetic_modules::install_synthetic_modules(&self.loader, ctx);
+        builtins::bundle_builtin_modules(&self.loader, ctx);
 
         let runtime_limits = ctx.runtime_limits_mut();
         runtime_limits.set_loop_iteration_limit(self.execution_limits.max_loop_iterations);
