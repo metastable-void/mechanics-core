@@ -393,6 +393,11 @@ impl MechanicsPool {
         if config.run_timeout.is_zero() {
             return Err(MechanicsError::runtime_pool("run_timeout must be > 0"));
         }
+        if Instant::now().checked_add(config.run_timeout).is_none() {
+            return Err(MechanicsError::runtime_pool(
+                "run_timeout is too large for the current platform clock",
+            ));
+        }
 
         let reqwest_client = reqwest::Client::builder()
             .build()

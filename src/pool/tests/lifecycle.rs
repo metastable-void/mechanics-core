@@ -42,6 +42,18 @@ fn pool_new_rejects_invalid_config() {
         Ok(_) => panic!("run_timeout=0 must fail"),
     };
     assert!(matches!(err, MechanicsError::RuntimePool(_)));
+
+    let err = match MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        queue_capacity: 1,
+        run_timeout: Duration::MAX,
+        ..Default::default()
+    }) {
+        Err(err) => err,
+        Ok(_) => panic!("oversized run_timeout must fail"),
+    };
+    assert!(matches!(err, MechanicsError::RuntimePool(_)));
+    assert!(err.msg().contains("too large"));
 }
 
 #[test]

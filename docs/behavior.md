@@ -256,6 +256,7 @@ Response-size behavior:
 - N worker threads (`worker_count`),
 - supervisor thread with restart rate limiter (`restart_window`, `max_restarts_in_window`).
 - If any worker fails during startup runtime initialization, construction fails with `MechanicsError::RuntimePool` (no partial usable pool is returned).
+- `run_timeout` is validated at construction and rejected if the platform clock cannot represent `Instant::now() + run_timeout`.
 
 ### `run(job)`
 - Blocks waiting for enqueue up to `enqueue_timeout`.
@@ -306,6 +307,13 @@ Defaults:
 
 Note:
 - `MechanicsError` is `#[non_exhaustive]`; downstream `match` statements must include a wildcard arm.
+
+Common user-visible trigger categories:
+- `RuntimePool`: invalid pool/config values, startup/runtime initialization failures, or other pool lifecycle setup failures.
+- `Execution`: script/module errors, promise lifecycle errors, JSON conversion failures, and endpoint request/response processing failures.
+- `RunTimeout`: overall `run`/`run_try_enqueue` deadline elapsed.
+- `QueueTimeout` / `QueueFull`: enqueue pressure (`run` wait timed out vs `run_try_enqueue` immediate full queue).
+- `PoolClosed` / `WorkerUnavailable`: pool closed, queue disconnected, or no workers available under restart guard.
 
 ## Usage example (Rust)
 ```rust

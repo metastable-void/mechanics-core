@@ -81,6 +81,92 @@ fn run_timeout_can_expire_while_waiting_to_enqueue() {
 }
 
 #[test]
+fn run_try_enqueue_reports_queue_full_without_network_dependencies() {
+    let pool = synthetic_pool(1, MechanicsExecutionLimits::default());
+    let (reply_tx, _reply_rx) = bounded(1);
+
+    let queued = make_job(
+        r#"export default function main() { return 0; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    pool.shared
+        .tx
+        .send(PoolMessage::Run(PoolJob {
+            job: queued,
+            reply: reply_tx,
+            canceled: Arc::new(AtomicBool::new(false)),
+        }))
+        .expect("fill queue");
+
+    let contender = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run_try_enqueue(contender)
+        .expect_err("full queue must reject immediate enqueue");
+    assert!(matches!(err, MechanicsError::QueueFull(_)));
+}
+
+#[test]
+fn run_reports_enqueue_timeout_without_network_dependencies() {
+    let (tx, rx) = bounded(1);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = Arc::new(MechanicsPoolShared {
+        tx,
+        rx,
+        exit_tx,
+        exit_rx,
+        workers: RwLock::new(HashMap::new()),
+        next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 1,
+        closed: AtomicBool::new(false),
+        restart_blocked: AtomicBool::new(false),
+        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+        execution_limits: MechanicsExecutionLimits::default(),
+        default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
+        reqwest_client: reqwest::Client::new(),
+        #[cfg(test)]
+        force_worker_runtime_init_failure: false,
+    });
+
+    let pool = MechanicsPool {
+        shared,
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(200),
+        supervisor: None,
+    };
+
+    let (reply_tx, _reply_rx) = bounded(1);
+    let queued = make_job(
+        r#"export default function main() { return 0; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    pool.shared
+        .tx
+        .send(PoolMessage::Run(PoolJob {
+            job: queued,
+            reply: reply_tx,
+            canceled: Arc::new(AtomicBool::new(false)),
+        }))
+        .expect("fill queue");
+
+    let contender = make_job(
+        r#"export default function main() { return 2; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run(contender)
+        .expect_err("run should report enqueue timeout when queue remains full");
+    assert!(matches!(err, MechanicsError::QueueTimeout(_)));
+}
+
+#[test]
 #[ignore = "requires local socket bind permission in the execution environment"]
 fn run_try_enqueue_reports_queue_full() {
     let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);

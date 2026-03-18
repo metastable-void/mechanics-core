@@ -9,7 +9,7 @@ This report supersedes the previous content of this file. Prior versions are arc
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`64 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`66 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - Result: fail on style-only `clippy::derivable_impls` in `src/http.rs` (`EndpointBodyType`, `SlottedQueryMode`).
 
@@ -109,36 +109,47 @@ This report supersedes the previous content of this file. Prior versions are arc
 ### 7) Fail-fast constructor docs do not mention call-time `run_timeout` overflow failure
 - Severity: low
 - Category: documentation/behavior mismatch
+- Status: done (2026-03-18)
 - Evidence:
 - `MechanicsPool::new` docs describe fail-fast invalid config handling (`src/pool.rs:340` to `src/pool.rs:346`).
 - Constructor checks `run_timeout != 0` only (`src/pool.rs:358` to `src/pool.rs:360`).
 - Overflow guard is deferred to `run`/`run_try_enqueue` deadline calculation (`src/pool.rs:323` to `src/pool.rs:326`).
 - Impact:
 - A pool can construct successfully but fail every run with `RuntimePool` for extreme timeout values.
-- Recommendation:
-- Validate overflow feasibility in constructor, or document this as call-time failure.
+- Resolution:
+- Added constructor-time `run_timeout` overflow validation: `MechanicsPool::new` now rejects values that cannot be represented by the current platform clock.
+- Updated behavior docs to record this fail-fast validation explicitly.
+- Verification:
+- Added config test in `src/pool/tests/lifecycle.rs` under `pool_new_rejects_invalid_config` for `run_timeout: Duration::MAX`.
 
 ### 8) Unsafe tracing invariants are implicit
 - Severity: low
 - Category: undefined-behavior risk surface (future maintenance)
+- Status: done (2026-03-18)
 - Evidence:
 - `MechanicsState` uses `#[unsafe_ignore_trace]` fields (`src/runtime.rs:59`, `src/runtime.rs:62`, `src/runtime.rs:65`, `src/runtime.rs:68`) with no nearby safety rationale.
 - Impact:
 - Current code appears safe, but future refactors could accidentally violate GC tracing assumptions.
-- Recommendation:
-- Add explicit safety comments/invariants for each ignored field.
+- Resolution:
+- Added explicit `SAFETY` invariants above every `#[unsafe_ignore_trace]` field in `MechanicsState`, documenting why each field is non-GC and safe to ignore in tracing.
 
 ### 9) Test coverage gaps hide several high-risk behaviors from default runs
 - Severity: medium
 - Category: testing gap
+- Status: done (2026-03-18)
 - Evidence:
 - Queue pressure/concurrency tests are ignored (`src/pool/tests/queue.rs:83`, `src/pool/tests/queue.rs:154`).
 - Network/socket integration tests are ignored by default (`src/pool/tests/endpoint_network.rs`, `src/pool/tests/internet.rs:4`).
 - No test currently exercises real supervisor recovery after hitting restart guard.
 - Impact:
 - Regressions in availability/concurrency paths can slip through normal CI.
-- Recommendation:
-- Add deterministic local tests for supervisor restart recovery and queue pressure behavior that can run in standard CI.
+- Resolution:
+- Added deterministic non-network queue pressure tests that run in standard CI:
+- `run_try_enqueue_reports_queue_full_without_network_dependencies`
+- `run_reports_enqueue_timeout_without_network_dependencies`
+- Added deterministic supervisor recovery test:
+- `reconcile_workers_recovers_after_restart_window_without_new_exit_events`
+- Kept the existing ignored network/socket tests unchanged.
 
 ## Requested categories explicitly checked
 
@@ -155,5 +166,4 @@ This report supersedes the previous content of this file. Prior versions are arc
 - Panic usage observed is test-only.
 
 ## Suggested follow-up order
-1. Harden lifecycle/docs/testing gaps (#7, #9).
-2. Add explicit GC safety invariants (#8).
+1. Remaining medium/high findings focus on broader endpoint protocol/docs and optional integration coverage.

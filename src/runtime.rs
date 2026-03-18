@@ -56,15 +56,19 @@ impl HostHooks for RuntimeHostHooks {
 
 #[derive(JsData, Finalize, Trace, Clone, Debug)]
 pub(crate) struct MechanicsState {
+    // SAFETY: `MechanicsConfig` is Rust-owned data and does not embed GC-traced Boa handles.
     #[unsafe_ignore_trace]
     pub(crate) config: Arc<MechanicsConfig>,
 
+    // SAFETY: `reqwest::Client` is an external Rust type with no references into Boa's GC heap.
     #[unsafe_ignore_trace]
     reqwest_client: reqwest::Client,
 
+    // SAFETY: Primitive scalar copied into runtime config; not a GC-managed value.
     #[unsafe_ignore_trace]
     default_timeout_ms: Option<u64>,
 
+    // SAFETY: Primitive scalar copied into runtime config; not a GC-managed value.
     #[unsafe_ignore_trace]
     default_response_max_bytes: Option<usize>,
 }
