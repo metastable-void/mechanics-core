@@ -22,6 +22,9 @@ across jobs.
 Public API re-exports are in `src/lib.rs`.
 
 ## Scopes
+This crate is intended to be integrated into systems as automation/orchestration layers.
+While using JavaScript, this crate itself is not a Web thing.
+
 ### In scope
 - Execute user-provided JavaScript modules safely inside isolated Boa realms.
 - Provide a synchronous Rust API (`MechanicsPool`) for bounded worker-pool execution.
