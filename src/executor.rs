@@ -289,7 +289,10 @@ impl ModuleLoader for CustomModuleLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boa_engine::{JsValue, job::TimeoutJob};
+    use boa_engine::{
+        JsValue,
+        job::{GenericJob, NativeAsyncJob, PromiseJob, TimeoutJob},
+    };
     use std::{cell::Cell, rc::Rc};
 
     #[test]
@@ -322,5 +325,39 @@ mod tests {
             .drain_timeout_jobs(&mut context)
             .expect("timeout jobs should run without error");
         assert_eq!(counter.get(), 11);
+    }
+
+    #[test]
+    fn job_routing_harness_covers_all_current_boa_job_variants() {
+        // Compatibility harness: if Boa adds constructible variants in future versions,
+        // extend this test to assert explicit routing behavior for the new variants.
+        let queue = Rc::new(Queue::new().expect("queue runtime should initialize"));
+        let mut context = Context::default();
+        let realm = context.realm().clone();
+
+        Rc::clone(&queue).enqueue_job(
+            Job::PromiseJob(PromiseJob::new(|_| Ok(JsValue::undefined()))),
+            &mut context,
+        );
+        Rc::clone(&queue).enqueue_job(
+            Job::AsyncJob(NativeAsyncJob::new(async |_| Ok(JsValue::undefined()))),
+            &mut context,
+        );
+        Rc::clone(&queue).enqueue_job(
+            Job::TimeoutJob(TimeoutJob::from_duration(
+                |_| Ok(JsValue::undefined()),
+                Duration::from_millis(1),
+            )),
+            &mut context,
+        );
+        Rc::clone(&queue).enqueue_job(
+            Job::GenericJob(GenericJob::new(|_| Ok(JsValue::undefined()), realm)),
+            &mut context,
+        );
+
+        assert_eq!(queue.promise_jobs.borrow().len(), 1);
+        assert_eq!(queue.async_jobs.borrow().len(), 1);
+        assert_eq!(queue.timeout_jobs.borrow().values().map(Vec::len).sum::<usize>(), 1);
+        assert_eq!(queue.generic_jobs.borrow().len(), 1);
     }
 }

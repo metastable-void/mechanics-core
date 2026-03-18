@@ -54,21 +54,18 @@ impl HttpMethod {
 }
 
 /// Endpoint body encoding/decoding mode.
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, Default,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointBodyType {
     /// JSON payload (`application/json`).
+    #[default]
     Json,
     /// UTF-8 string payload (`text/plain; charset=utf-8`).
     Utf8,
     /// Raw bytes payload (`application/octet-stream`).
     Bytes,
-}
-
-impl Default for EndpointBodyType {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 /// Validation and default policy for one URL template slot.
@@ -98,10 +95,13 @@ impl UrlParamSpec {
 }
 
 /// Emission mode for a slotted query parameter.
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash, Default,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SlottedQueryMode {
     /// Slot must resolve and must be non-empty.
+    #[default]
     Required,
     /// Slot must resolve and may be empty.
     RequiredAllowEmpty,
@@ -109,12 +109,6 @@ pub enum SlottedQueryMode {
     Optional,
     /// Missing is omitted; if provided, empty is emitted.
     OptionalAllowEmpty,
-}
-
-impl Default for SlottedQueryMode {
-    fn default() -> Self {
-        Self::Required
-    }
 }
 
 /// One query emission rule.

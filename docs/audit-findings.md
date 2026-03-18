@@ -9,9 +9,9 @@ This report supersedes the previous content of this file. Prior versions are arc
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`66 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`69 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
-- Result: fail on style-only `clippy::derivable_impls` in `src/http.rs` (`EndpointBodyType`, `SlottedQueryMode`).
+- Result: pass.
 
 ## Findings
 
@@ -174,6 +174,9 @@ This report supersedes the previous content of this file. Prior versions are arc
 - `cargo clippy --all-targets --all-features -- -W dead_code` found no dead-code warnings in runtime paths.
 - Remaining low-confidence coverage areas are mostly environmental paths (ignored socket/internet tests) plus hard-to-force disconnect branches.
 - Deterministic queue-pressure tests were added earlier and are now part of default test runs.
+- Added deterministic disconnected-channel coverage in `src/pool/tests/queue.rs`:
+- `run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnected`
+- `run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_channel`
 
 ### Boa job variants audit
 - Current `boa_engine 0.21.0` `Job` enum contains only:
@@ -181,10 +184,16 @@ This report supersedes the previous content of this file. Prior versions are arc
 - No currently-missing variant implementation was found for this version.
 - Runtime hardening applied:
 - unsupported/future job fallback now returns an error message including the concrete variant debug name (`src/executor.rs`), improving diagnosis if upstream introduces new variants.
-- Proposed next fix:
-- add a focused unit test once Boa exposes a constructible non-standard job variant path (currently not constructible from this crate).
+- Added compatibility harness test:
+- `executor::tests::job_routing_harness_covers_all_current_boa_job_variants` verifies explicit routing of all currently-constructible Boa variants.
 
 ### Panicking external APIs / convenience methods audit
 - `cargo clippy --lib --all-features -- -W clippy::panic -W clippy::unwrap_used -W clippy::expect_used` found no production-library panicking calls.
 - `rg` scan confirmed `expect`/`panic`/`unwrap` uses in `src/` are test-only.
 - No external-crate convenience calls with panic semantics were found in non-test runtime code paths.
+
+### Strict lint profile notes
+- A maximal profile (`pedantic` + `nursery` + panic/unwrap families) was trialed and produced a very large volume of style-oriented findings, mostly non-critical for this crate's current conventions and test code.
+- Recommended practical policy:
+- keep `cargo clippy --all-targets --all-features -- -D warnings` as the required gate,
+- keep a library-focused hardening pass (`--lib` + panic/unwrap/todo/unimplemented/dbg lints) in CI or periodic audits.

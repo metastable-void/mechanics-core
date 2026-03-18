@@ -27,6 +27,11 @@ Ignored tests currently cover network-bound endpoint behavior and require local 
 4. Run `cargo clippy --all-targets --all-features`.
 5. Update docs and/or declarations when public behavior changes.
 
+Recommended stricter periodic lint pass for runtime safety:
+```bash
+cargo clippy --lib --all-features -- -D warnings -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::todo -W clippy::unimplemented -W clippy::dbg_macro
+```
+
 ## Running the example
 The example binary at `examples/test-script.rs` executes a JS module with JSON config:
 
@@ -43,6 +48,7 @@ When changing runtime-facing behavior:
 - Keep `docs/behavior.md` aligned with actual behavior.
 - Keep `ts-types/*.d.ts` and `ts-types/README.md` policy expectations aligned for synthetic modules.
 - Keep examples in docs valid against current API names (`run_try_enqueue`, `MechanicsConfig::new`, endpoint body-type fields, and timeout/response-limit fields).
+- If upgrading `boa_engine`, update `src/executor.rs` job routing and keep `job_routing_harness_covers_all_current_boa_job_variants` passing with explicit coverage for any newly constructible job variants.
 
 When changing config validation or endpoint behavior:
 - Add or update tests under `src/http/tests/` and `src/pool/tests/`.

@@ -167,6 +167,112 @@ fn run_reports_enqueue_timeout_without_network_dependencies() {
 }
 
 #[test]
+fn run_and_run_try_enqueue_report_worker_unavailable_when_job_queue_is_disconnected() {
+    let (tx_disconnected, rx_disconnected) = bounded(1);
+    drop(rx_disconnected);
+    let (_tx_alive, rx_alive) = bounded(1);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = Arc::new(MechanicsPoolShared {
+        tx: tx_disconnected,
+        rx: rx_alive,
+        exit_tx,
+        exit_rx,
+        workers: RwLock::new(HashMap::new()),
+        next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 1,
+        closed: AtomicBool::new(false),
+        restart_blocked: AtomicBool::new(false),
+        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+        execution_limits: MechanicsExecutionLimits::default(),
+        default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
+        reqwest_client: reqwest::Client::new(),
+        #[cfg(test)]
+        force_worker_runtime_init_failure: false,
+    });
+    let pool = MechanicsPool {
+        shared,
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(50),
+        supervisor: None,
+    };
+
+    let job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run(job.clone())
+        .expect_err("disconnected queue should surface worker unavailable");
+    assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+
+    let err = pool
+        .run_try_enqueue(job)
+        .expect_err("disconnected queue should surface worker unavailable");
+    assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+}
+
+#[test]
+fn run_and_run_try_enqueue_report_worker_unavailable_when_worker_drops_reply_channel() {
+    let (tx, rx) = bounded(8);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = Arc::new(MechanicsPoolShared {
+        tx,
+        rx: rx.clone(),
+        exit_tx,
+        exit_rx,
+        workers: RwLock::new(HashMap::new()),
+        next_worker_id: AtomicUsize::new(0),
+        desired_worker_count: 1,
+        closed: AtomicBool::new(false),
+        restart_blocked: AtomicBool::new(false),
+        restart_guard: Mutex::new(RestartGuard::new(Duration::from_secs(1), 1)),
+        execution_limits: MechanicsExecutionLimits::default(),
+        default_http_timeout_ms: None,
+        default_http_response_max_bytes: None,
+        reqwest_client: reqwest::Client::new(),
+        #[cfg(test)]
+        force_worker_runtime_init_failure: false,
+    });
+    let pool = MechanicsPool {
+        shared: Arc::clone(&shared),
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(200),
+        supervisor: None,
+    };
+
+    let consumer = thread::spawn(move || {
+        for _ in 0..2 {
+            match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(PoolMessage::Run(pool_job)) => {
+                    drop(pool_job);
+                }
+                other => panic!("unexpected queue event: {other:?}"),
+            }
+        }
+    });
+
+    let job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+
+    let err = pool
+        .run(job.clone())
+        .expect_err("dropped reply channel should surface worker unavailable");
+    assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+
+    let err = pool
+        .run_try_enqueue(job)
+        .expect_err("dropped reply channel should surface worker unavailable");
+    assert!(matches!(err, MechanicsError::WorkerUnavailable(_)));
+
+    consumer.join().expect("join consumer");
+}
+
+#[test]
 #[ignore = "requires local socket bind permission in the execution environment"]
 fn run_try_enqueue_reports_queue_full() {
     let (url, server) = spawn_json_server(Duration::from_millis(900), r#"{"ok":true}"#);
