@@ -13,7 +13,7 @@ across jobs.
 - Per-job execution limits (`MechanicsExecutionLimits`).
 - Synthetic JS modules:
   `mechanics:endpoint` for preconfigured HTTP calls (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`),
-  `mechanics:form-urlencoded`, `mechanics:base64`, `mechanics:hex`, `mechanics:base32`, and `mechanics:rand`.
+  `mechanics:form-urlencoded`, `mechanics:base64`, `mechanics:hex`, `mechanics:base32`, `mechanics:rand`, and `mechanics:uuid`.
 - Endpoint config supports JSON-deserializable resilience policy (`retry_policy`) for retries/backoff/rate-limit handling.
 - Structured error model (`MechanicsError`, marked `#[non_exhaustive]`).
 

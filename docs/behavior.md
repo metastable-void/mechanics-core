@@ -4,6 +4,7 @@
 `mechanics-core` executes user-provided JavaScript modules inside Boa (`boa_engine`) with:
 - per-job execution limits,
 - a built-in `mechanics:endpoint` helper for preconfigured HTTP calls,
+- utility synthetic modules (`mechanics:form-urlencoded`, `mechanics:base64`, `mechanics:hex`, `mechanics:base32`, `mechanics:rand`, `mechanics:uuid`),
 - a worker pool for concurrent job execution.
 
 The crate API is exported from `src/lib.rs`:
@@ -267,6 +268,15 @@ Runtime registers a synthetic module named `mechanics:rand` with default export:
 Notes:
 - `SharedArrayBuffer`-backed typed arrays/DataView are not supported.
 
+## Built-in module: `mechanics:uuid`
+Runtime registers a synthetic module named `mechanics:uuid` with default export:
+- `uuid(variant?: "v3" | "v4" | "v5" | "v6" | "v7" | "nil" | "max", options?: { namespace: string; name: string }): string`
+
+Notes:
+- Returns lowercase canonical hyphenated UUID strings.
+- Default variant is `v4`.
+- `v3`/`v5` are name-based and require `options.namespace` and `options.name`.
+
 ## Type declarations
 - `ts-types/` contains `.d.ts` declarations for runtime synthetic modules.
 - Any public runtime API change must update `ts-types/*.d.ts` in the same change.
@@ -404,6 +414,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `mechanics:hex`
 - `mechanics:base32`
 - `mechanics:rand`
+- `mechanics:uuid`
 - Results must be JSON-convertible to be returned successfully.
 - Queue cancellation is best-effort; jobs already executing continue until runtime completion/limits.
 - `mechanics:endpoint` returns `{ body, headers, status, ok }`; `body` may be JSON, UTF-8 string, bytes (`Uint8Array`), or `null` (empty body) based on endpoint configuration.

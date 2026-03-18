@@ -293,3 +293,75 @@ fn base32_decode_rejects_invalid_input() {
         other => panic!("unexpected error kind: {other}"),
     }
 }
+
+#[test]
+fn uuid_module_supports_core_variants() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import uuid from "mechanics:uuid";
+            export default function main(_arg) {
+                const nil = uuid("nil");
+                const max = uuid("max");
+                const v4 = uuid("v4");
+                const v6 = uuid("v6");
+                const v7 = uuid("v7");
+                const ns = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+                const v5a = uuid("v5", { namespace: ns, name: "example" });
+                const v5b = uuid("v5", { namespace: ns, name: "example" });
+                return { nil, max, v4, v6, v7, v5a, v5b, v5Stable: v5a === v5b };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+
+    assert_eq!(value["nil"], json!("00000000-0000-0000-0000-000000000000"));
+    assert_eq!(value["max"], json!("ffffffff-ffff-ffff-ffff-ffffffffffff"));
+    for key in ["v4", "v6", "v7", "v5a"] {
+        let s = value[key].as_str().expect("uuid must be string");
+        assert_eq!(s.len(), 36);
+        assert_eq!(&s[8..9], "-");
+        assert_eq!(&s[13..14], "-");
+        assert_eq!(&s[18..19], "-");
+        assert_eq!(&s[23..24], "-");
+    }
+    assert_eq!(value["v5Stable"], json!(true));
+}
+
+#[test]
+fn uuid_module_rejects_missing_v5_options() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import uuid from "mechanics:uuid";
+            export default function main(_arg) {
+                return uuid("v5");
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run(job)
+        .expect_err("missing v5 options should fail");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("options"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}

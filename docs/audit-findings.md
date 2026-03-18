@@ -16,22 +16,12 @@ Update this section on code additions.
 
 ## Verification performed
 - `cargo test --all-targets`
-- Result: pass (`83 passed`, `0 failed`, `20 ignored`).
+- Result: pass (`85 passed`, `0 failed`, `20 ignored`).
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - Result: pass (2026-03-18).
 
 ## Active findings
-
-### 16) Built-in runtime modules do not expose orchestration primitives
-- Severity: low
-- Category: missing capability (runtime expressiveness)
-- Status: open
-- Evidence:
-- Current synthetic modules are endpoint + codecs + RNG (`src/runtime/synthetic_modules.rs`, `src/lib.rs`).
-- Impact:
-- Users rebuild common orchestration helpers (IDs/events/checkpoints) per script set.
-- Proposed direction:
-- Consider optional feature-gated synthetic modules for deterministic IDs, step/event emission hooks, and checkpoint serialization helpers.
+- None currently open.
 
 ## Additional audit notes
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
@@ -55,3 +45,4 @@ Update this section on code additions.
 - 13) HTTP method set too narrow: fixed by adding `PATCH`/`HEAD`/`OPTIONS` and aligning body policy to RFC 9110 baseline.
 - 14) Public pool stats API missing: fixed with synchronous non-blocking `MechanicsPool::stats()` returning `MechanicsPoolStats` (worker/queue/restart snapshot) and non-blocking behavior test.
 - 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).
+- 16) Orchestration-primitives gap reframed and addressed: generalized orchestration module deemed unnecessary for this crate scope; added focused `mechanics:uuid` utility module (`v3`/`v4`/`v5`/`v6`/`v7`/`nil`/`max`) with docs/types/tests.
