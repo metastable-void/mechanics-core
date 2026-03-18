@@ -6,6 +6,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 #[test]
 fn run_simple_module_returns_value() {
@@ -301,6 +302,123 @@ fn pool_uses_injected_endpoint_http_client() {
     assert_eq!(value["body"]["source"], json!("mock"));
     assert_eq!(value["headers"]["x-trace-id"], json!("trace-123"));
     assert_eq!(calls.load(Ordering::Relaxed), 1);
+}
+
+#[derive(Debug)]
+struct RecordingEndpointHttpClient {
+    seen_urls: Arc<Mutex<Vec<String>>>,
+}
+
+impl EndpointHttpClient for RecordingEndpointHttpClient {
+    fn execute(
+        &self,
+        request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        let seen_urls = Arc::clone(&self.seen_urls);
+        Box::pin(async move {
+            seen_urls
+                .lock()
+                .expect("lock seen urls")
+                .push(request.url.as_str().to_owned());
+            let body = serde_json::to_vec(&json!({
+                "url": request.url.as_str(),
+                "max": request.response_max_bytes
+            }))
+            .expect("serialize mock body");
+            Ok(EndpointHttpResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                content_length: Some(u64::try_from(body.len()).expect("body length fits u64")),
+                body,
+            })
+        })
+    }
+}
+
+#[test]
+fn prepared_endpoint_cache_is_isolated_per_job_config() {
+    let seen_urls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        endpoint_http_client: Some(Arc::new(RecordingEndpointHttpClient {
+            seen_urls: Arc::clone(&seen_urls),
+        })),
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let endpoint_v1 = HttpEndpoint::new(HttpMethod::Get, "https://mock.local/one", HashMap::new());
+    let endpoint_v2 = HttpEndpoint::new(HttpMethod::Get, "https://mock.local/two", HashMap::new());
+    let js = r#"
+        import endpoint from "mechanics:endpoint";
+        export default async function main(_arg) {
+            const res = await endpoint("ep", {});
+            return res.body.url;
+        }
+    "#;
+
+    let first = pool
+        .run(make_job(js, endpoint_config("ep", endpoint_v1), Value::Null))
+        .expect("run first job");
+    let second = pool
+        .run(make_job(js, endpoint_config("ep", endpoint_v2), Value::Null))
+        .expect("run second job");
+
+    assert_eq!(first, json!("https://mock.local/one"));
+    assert_eq!(second, json!("https://mock.local/two"));
+    assert_eq!(
+        *seen_urls.lock().expect("lock seen urls"),
+        vec![
+            "https://mock.local/one".to_owned(),
+            "https://mock.local/two".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn endpoint_request_uses_effective_response_max_bytes_precedence() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        default_http_response_max_bytes: Some(111),
+        endpoint_http_client: Some(Arc::new(RecordingEndpointHttpClient {
+            seen_urls: Arc::new(Mutex::new(Vec::new())),
+        })),
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let js = r#"
+        import endpoint from "mechanics:endpoint";
+        export default async function main(_arg) {
+            const res = await endpoint("ep", {});
+            return res.body.max;
+        }
+    "#;
+
+    let default_max = pool
+        .run(make_job(
+            js,
+            endpoint_config(
+                "ep",
+                HttpEndpoint::new(HttpMethod::Get, "https://mock.local/default", HashMap::new()),
+            ),
+            Value::Null,
+        ))
+        .expect("run job with pool default");
+    assert_eq!(default_max, json!(111));
+
+    let endpoint_override = pool
+        .run(make_job(
+            js,
+            endpoint_config(
+                "ep",
+                HttpEndpoint::new(HttpMethod::Get, "https://mock.local/override", HashMap::new())
+                    .with_response_max_bytes(Some(222)),
+            ),
+            Value::Null,
+        ))
+        .expect("run job with endpoint override");
+    assert_eq!(endpoint_override, json!(222));
 }
 
 #[test]
