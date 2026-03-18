@@ -77,3 +77,5 @@ export default function main(arg) {
 - [docs/development.md](docs/development.md): contributor workflow, checks, and change checklist.
 - [docs/audit-findings.md](docs/audit-findings.md): latest audit and resolved findings.
 - [ts-types/README.md](ts-types/README.md): TypeScript declaration maintenance policy.
+- `ts-types/mechanics-json-shapes.d.ts`: TypeScript interfaces for serde JSON payloads (`MechanicsJob`, `MechanicsConfig`, endpoint config).
+- `json-schema/*.schema.json`: JSON Schemas for canonical job/config payload shapes.

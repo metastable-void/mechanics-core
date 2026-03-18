@@ -68,6 +68,7 @@ Versioning policy for this repository state:
 When changing runtime-facing behavior:
 - Keep `docs/behavior.md` aligned with actual behavior.
 - Keep `ts-types/*.d.ts` and `ts-types/README.md` policy expectations aligned for synthetic modules.
+- Keep JSON payload shape artifacts aligned: `ts-types/mechanics-json-shapes.d.ts` and `json-schema/*.schema.json`.
 - Keep examples in docs valid against current API names (`run_try_enqueue`, `stats`, `MechanicsConfig::new`, endpoint body-type fields, timeout/response-limit fields, and `retry_policy`).
 - Preserve JSON-first API guarantees: serde JSON parseability of runtime-facing config/job types is a feature and must remain first-class.
 - If adding Rust-side constructors/builders or tightening visibility, keep serde and constructor validation behavior aligned and avoid breaking JSON ingestion flows.

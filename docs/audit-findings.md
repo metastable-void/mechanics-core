@@ -62,6 +62,7 @@ Update this section on code additions.
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
 - Unimplemented code paths: no `todo!`/`unimplemented!` in production code under `src/`.
 - Panic risk: no production-path `panic!/unwrap()/expect()` crash points found in reviewed runtime code.
+- JSON-first shape artifacts: maintain and update `ts-types/mechanics-json-shapes.d.ts` and `json-schema/*.schema.json` when serde-visible payload shapes change.
 
 ## Done summary
 

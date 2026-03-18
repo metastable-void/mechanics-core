@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/metastable-void/mechanics-core/json-schema/mechanics-config.schema.json",
+  "title": "MechanicsConfig",
+  "description": "Serde-compatible JSON shape for mechanics-core endpoint configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["endpoints"],
+  "properties": {
+    "endpoints": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/httpEndpoint" }
+    }
+  },
+  "$defs": {
+    "httpMethod": {
+      "type": "string",
+      "enum": ["get", "post", "put", "patch", "delete", "head", "options"]
+    },
+    "endpointBodyType": {
+      "type": "string",
+      "enum": ["json", "utf8", "bytes"]
+    },
+    "slottedQueryMode": {
+      "type": "string",
+      "enum": [
+        "required",
+        "required_allow_empty",
+        "optional",
+        "optional_allow_empty"
+      ]
+    },
+    "urlParamSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": { "type": ["string", "null"] },
+        "min_bytes": { "type": "integer", "minimum": 0 },
+        "max_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "querySpec": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "key", "value"],
+          "properties": {
+            "type": { "const": "const" },
+            "key": { "type": "string" },
+            "value": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "key", "slot"],
+          "properties": {
+            "type": { "const": "slotted" },
+            "key": { "type": "string" },
+            "slot": { "type": "string" },
+            "mode": { "$ref": "#/$defs/slottedQueryMode" },
+            "default": { "type": ["string", "null"] },
+            "min_bytes": { "type": "integer", "minimum": 0 },
+            "max_bytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "endpointRetryPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 0 },
+        "base_backoff_ms": { "type": "integer", "minimum": 0 },
+        "max_backoff_ms": { "type": "integer", "minimum": 0 },
+        "max_retry_delay_ms": { "type": "integer", "minimum": 0 },
+        "rate_limit_backoff_ms": { "type": "integer", "minimum": 0 },
+        "retry_on_io_errors": { "type": "boolean" },
+        "retry_on_timeout": { "type": "boolean" },
+        "respect_retry_after": { "type": "boolean" },
+        "retry_on_status": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+        }
+      }
+    },
+    "httpEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "url_template"],
+      "properties": {
+        "method": { "$ref": "#/$defs/httpMethod" },
+        "url_template": { "type": "string" },
+        "url_param_specs": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/urlParamSpec" }
+        },
+        "query_specs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/querySpec" }
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "overridable_request_headers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "exposed_response_headers": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "request_body_type": { "$ref": "#/$defs/endpointBodyType" },
+        "response_body_type": { "$ref": "#/$defs/endpointBodyType" },
+        "response_max_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "timeout_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "allow_non_success_status": { "type": "boolean" },
+        "retry_policy": { "$ref": "#/$defs/endpointRetryPolicy" }
+      }
+    }
+  }
+}

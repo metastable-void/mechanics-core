@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/metastable-void/mechanics-core/json-schema/mechanics-job.schema.json",
+  "title": "MechanicsJob",
+  "description": "Serde-compatible JSON shape for mechanics-core job payloads.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mod_source", "arg", "config"],
+  "properties": {
+    "mod_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "arg": true,
+    "config": {
+      "$ref": "./mechanics-config.schema.json"
+    }
+  }
+}
