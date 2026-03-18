@@ -201,6 +201,17 @@ Minimal endpoint config example (JSON):
       "request_body_type": "json",
       "response_body_type": "json",
       "response_max_bytes": 1048576,
+      "retry_policy": {
+        "max_attempts": 3,
+        "base_backoff_ms": 100,
+        "max_backoff_ms": 1000,
+        "max_retry_delay_ms": 5000,
+        "rate_limit_backoff_ms": 750,
+        "retry_on_io_errors": true,
+        "retry_on_timeout": true,
+        "respect_retry_after": true,
+        "retry_on_status": [429, 500, 502, 503, 504]
+      },
       "overridable_request_headers": ["x-request-id"],
       "exposed_response_headers": ["content-type", "x-trace-id"],
       "timeout_ms": 5000,
@@ -395,7 +406,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - `mechanics:rand`
 - Results must be JSON-convertible to be returned successfully.
 - Queue cancellation is best-effort; jobs already executing continue until runtime completion/limits.
-- `mechanics:endpoint` returns `{ body, headers }`; `body` may be JSON, UTF-8 string, bytes (`Uint8Array`), or `null` (empty body) based on endpoint configuration.
+- `mechanics:endpoint` returns `{ body, headers, status, ok }`; `body` may be JSON, UTF-8 string, bytes (`Uint8Array`), or `null` (empty body) based on endpoint configuration.
 - URL/query value sources are constrained to configured slots (no arbitrary URL/method/header override from JS).
 - This crate currently does not include persistent module caching (source is parsed per job).
 

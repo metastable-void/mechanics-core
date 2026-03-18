@@ -62,7 +62,7 @@ Audit documentation routine (`docs/audit-findings.md`):
 When changing runtime-facing behavior:
 - Keep `docs/behavior.md` aligned with actual behavior.
 - Keep `ts-types/*.d.ts` and `ts-types/README.md` policy expectations aligned for synthetic modules.
-- Keep examples in docs valid against current API names (`run_try_enqueue`, `MechanicsConfig::new`, endpoint body-type fields, and timeout/response-limit fields).
+- Keep examples in docs valid against current API names (`run_try_enqueue`, `stats`, `MechanicsConfig::new`, endpoint body-type fields, timeout/response-limit fields, and `retry_policy`).
 - If upgrading `boa_engine`, update `src/executor.rs` job routing and keep `job_routing_harness_covers_all_current_boa_job_variants` passing with explicit coverage for any newly constructible job variants.
 
 When changing config validation or endpoint behavior:
