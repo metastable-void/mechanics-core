@@ -74,6 +74,7 @@ Resolution behavior:
 - Endpoint config controls HTTP method (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`), URL template, URL slot rules, query emission rules, headers, timeout, and status policy.
 - Endpoint config can optionally include resilience policy (`retry_policy`) for retries/backoff/rate-limit handling.
 - Endpoint transport implementation is selected at pool construction (`MechanicsPoolConfig.endpoint_http_client`) and is not JSON-configurable from jobs.
+- Endpoint transport execution currently assumes Tokio internally: `EndpointHttpClient::execute` runs on a pool-owned Tokio runtime, and retry delays use Tokio timers.
 - URL template placeholders (`{slot}`) are resolved from JS `options.urlParams` using configured `url_param_specs`.
 - URL template must not contain query string or fragment; use `query_specs` for query output.
 - Query string is built algorithmically from configured `query_specs` using JS `options.queries`.
@@ -326,6 +327,8 @@ Response-size behavior:
 - `MechanicsPool::new`, `run`, and `run_try_enqueue` may block the calling thread and should not be called directly on an async executor worker thread.
 - For Tokio integration, call synchronous methods inside `tokio::task::spawn_blocking(...)`.
 - Current implementation does not require caller-owned Tokio runtime state for these sync APIs; using them from `spawn_blocking` is supported.
+- Internally, workers host a Tokio current-thread runtime for Boa async jobs and endpoint transport futures.
+- Custom `EndpointHttpClient` implementations should treat Tokio availability inside worker execution as part of the runtime contract.
 
 ### Shutdown
 Dropping `MechanicsPool`:

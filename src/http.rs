@@ -97,6 +97,11 @@ pub struct EndpointHttpResponse {
 }
 
 /// Endpoint HTTP client abstraction configured at pool level.
+///
+/// Runtime contract:
+/// - `execute` futures are polled on the pool worker's internal Tokio runtime.
+/// - The built-in retry path in [`HttpEndpoint::execute`] also uses Tokio timers.
+/// - Implementations may therefore rely on Tokio async primitives.
 pub trait EndpointHttpClient: Send + Sync + std::fmt::Debug {
     fn execute(
         &self,
