@@ -42,6 +42,19 @@ Current status (2026-03-18):
 - It is currently non-gating and fails with many pedantic/nursery findings in non-test code, so use it as an audit signal rather than a required CI gate.
 - Keep `cargo clippy --all-targets --all-features -- -D warnings` as the blocking baseline.
 
+## Contract consistency gate
+Run this script periodically and before release cuts:
+
+```bash
+./scripts/check-contract-consistency.sh
+```
+
+This gate checks:
+- compile/test/clippy/rustdoc baselines,
+- `missing-docs` for public API surface,
+- stale contract names in code/docs/schema/declarations,
+- stale source-path references in docs after module layout changes.
+
 ## Running the example
 The example binary at `examples/test-script.rs` executes a JS module with JSON config:
 

@@ -77,6 +77,12 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features
 ```
 
+Contract consistency gate (recommended before release):
+```bash
+./scripts/check-contract-consistency.sh
+```
+Keep this script updated periodically as API names, module paths, and contract checks evolve.
+
 Optional (environment-dependent) tests:
 ```bash
 cargo test --all-targets -- --ignored

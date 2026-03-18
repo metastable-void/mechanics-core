@@ -32,7 +32,7 @@ declare module "mechanics:endpoint" {
      * - omitted/`undefined`: no request body
      * - explicit `null`: JSON null body (for `json` request mode)
      *
-     * For `GET`/`DELETE` endpoints, any provided body value (including `null`) is rejected.
+     * For `GET`/`DELETE`/`HEAD`/`OPTIONS` endpoints, any provided body value (including `null`) is rejected.
      */
     body?: unknown;
   }
