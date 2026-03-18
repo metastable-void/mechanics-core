@@ -1,4 +1,4 @@
-use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+use super::EndpointHttpHeaders;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{Error, ErrorKind},
@@ -94,7 +94,7 @@ impl EndpointRetryPolicy {
     pub(super) fn retry_delay_for_status(
         &self,
         status: u16,
-        headers: &HeaderMap,
+        headers: &EndpointHttpHeaders,
         attempt: usize,
     ) -> Duration {
         let delay_ms = if status == 429 {
@@ -105,10 +105,11 @@ impl EndpointRetryPolicy {
         Duration::from_millis(delay_ms)
     }
 
-    fn rate_limit_delay_ms(&self, headers: &HeaderMap, attempt: usize) -> u64 {
+    fn rate_limit_delay_ms(&self, headers: &EndpointHttpHeaders, attempt: usize) -> u64 {
         let retry_after_ms = if self.respect_retry_after {
             headers
-                .get(RETRY_AFTER)
+                .values("retry-after")
+                .next()
                 .and_then(Self::parse_retry_after_ms)
                 .map(|v| v.min(self.max_retry_delay_ms))
         } else {
@@ -121,8 +122,8 @@ impl EndpointRetryPolicy {
         })
     }
 
-    fn parse_retry_after_ms(value: &HeaderValue) -> Option<u64> {
-        let seconds = value.to_str().ok()?.trim().parse::<u64>().ok()?;
+    fn parse_retry_after_ms(value: &str) -> Option<u64> {
+        let seconds = value.trim().parse::<u64>().ok()?;
         Some(seconds.saturating_mul(1_000))
     }
 

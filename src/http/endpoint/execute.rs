@@ -1,7 +1,8 @@
 use super::*;
 use crate::http::{
     EndpointCallBody, EndpointCallOptions, EndpointHttpClient, EndpointHttpRequest,
-    EndpointHttpRequestBody, EndpointResponse, EndpointResponseBody, into_io_error,
+    EndpointHttpHeaders, EndpointHttpRequestBody, EndpointResponse, EndpointResponseBody,
+    into_io_error,
 };
 use serde_json::Value;
 use std::{
@@ -86,8 +87,8 @@ impl HttpEndpoint {
 
             Ok(EndpointHttpRequest {
                 method: self.method.clone(),
-                url: url.clone(),
-                headers: headers.clone(),
+                url: url.as_str().to_owned(),
+                headers: EndpointHttpHeaders::from_reqwest(&headers),
                 timeout_ms,
                 response_max_bytes,
                 body,

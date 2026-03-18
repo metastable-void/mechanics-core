@@ -1,9 +1,9 @@
 use boa_engine::{JsData, Trace};
 use boa_gc::Finalize;
-use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::HashSet,
     future::Future,
     io::{Error, ErrorKind},
     pin::Pin,
@@ -74,12 +74,85 @@ pub enum EndpointHttpRequestBody {
     Bytes(Vec<u8>),
 }
 
+/// Transport-neutral header collection used by endpoint HTTP client abstractions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EndpointHttpHeaders {
+    entries: Vec<(String, String)>,
+}
+
+impl EndpointHttpHeaders {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn insert(
+        &mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> &mut Self {
+        self.entries.push((name.into(), value.into()));
+        self
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    pub fn values<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
+        self.entries
+            .iter()
+            .filter(move |(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    pub(crate) fn from_reqwest(headers: &reqwest::header::HeaderMap) -> Self {
+        let mut out = Self::new();
+        let mut seen_multi: HashSet<reqwest::header::HeaderName> = HashSet::new();
+        for name in headers.keys() {
+            let name = name.clone();
+            if seen_multi.insert(name.clone()) {
+                for entry in headers.get_all(&name) {
+                    let text = entry
+                        .to_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|_| String::from_utf8_lossy(entry.as_bytes()).into_owned());
+                    out.insert(name.as_str().to_owned(), text);
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn to_reqwest(&self) -> std::io::Result<reqwest::header::HeaderMap> {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in &self.entries {
+            let header_name = reqwest::header::HeaderName::try_from(name.as_str()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("invalid transport request header name `{name}`: {e}"),
+                )
+            })?;
+            let header_value =
+                reqwest::header::HeaderValue::try_from(value.as_str()).map_err(|e| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!("invalid transport request header value for `{name}`: {e}"),
+                    )
+                })?;
+            map.append(header_name, header_value);
+        }
+        Ok(map)
+    }
+}
+
 /// Transport request shape used by pluggable endpoint HTTP clients.
 #[derive(Clone, Debug)]
 pub struct EndpointHttpRequest {
     pub method: HttpMethod,
-    pub url: reqwest::Url,
-    pub headers: HeaderMap,
+    pub url: String,
+    pub headers: EndpointHttpHeaders,
     pub timeout_ms: Option<u64>,
     pub response_max_bytes: Option<usize>,
     pub body: EndpointHttpRequestBody,
@@ -89,7 +162,7 @@ pub struct EndpointHttpRequest {
 #[derive(Debug)]
 pub struct EndpointHttpResponse {
     pub status: u16,
-    pub headers: HeaderMap,
+    pub headers: EndpointHttpHeaders,
     pub content_length: Option<u64>,
     pub body: Vec<u8>,
 }
@@ -126,9 +199,11 @@ impl EndpointHttpClient for ReqwestEndpointHttpClient {
     ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
         let client = self.client.clone();
         Box::pin(async move {
+            let url = reqwest::Url::parse(&request.url).map_err(into_io_error)?;
+            let headers = request.headers.to_reqwest()?;
             let mut req = client
-                .request(request.method.as_reqwest_method(), request.url)
-                .headers(request.headers);
+                .request(request.method.as_reqwest_method(), url)
+                .headers(headers);
 
             if let Some(timeout_ms) = request.timeout_ms {
                 req = req.timeout(Duration::from_millis(timeout_ms));
@@ -156,7 +231,7 @@ impl EndpointHttpClient for ReqwestEndpointHttpClient {
             })?;
             let status = res.status().as_u16();
             let content_length = res.content_length();
-            let headers = res.headers().clone();
+            let headers = EndpointHttpHeaders::from_reqwest(res.headers());
             if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
                 && len > max as u64
             {

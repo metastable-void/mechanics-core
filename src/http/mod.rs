@@ -11,8 +11,8 @@ pub use config::MechanicsConfig;
 pub use endpoint::{EndpointBodyType, HttpEndpoint, QuerySpec, SlottedQueryMode, UrlParamSpec};
 pub use retry::EndpointRetryPolicy;
 pub use transport::{
-    EndpointHttpClient, EndpointHttpRequest, EndpointHttpRequestBody, EndpointHttpResponse,
-    HttpMethod, ReqwestEndpointHttpClient,
+    EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
+    EndpointHttpResponse, HttpMethod, ReqwestEndpointHttpClient,
 };
 
 pub(crate) use endpoint::PreparedHttpEndpoint;

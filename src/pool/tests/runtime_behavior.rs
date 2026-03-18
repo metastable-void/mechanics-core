@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
-    EndpointHttpClient, EndpointHttpRequest, EndpointHttpRequestBody, EndpointHttpResponse,
+    EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
+    EndpointHttpResponse,
 };
-use reqwest::header::{HeaderMap, HeaderValue};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -246,7 +246,7 @@ impl EndpointHttpClient for MockEndpointHttpClient {
                     "expected GET method in mock client",
                 ));
             }
-            if request.url.as_str() != "https://mock.local/ping" {
+            if request.url != "https://mock.local/ping" {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "unexpected URL in mock client",
@@ -258,8 +258,8 @@ impl EndpointHttpClient for MockEndpointHttpClient {
                     "mock client expected no request body",
                 ));
             }
-            let mut headers = HeaderMap::new();
-            headers.insert("x-trace-id", HeaderValue::from_static("trace-123"));
+            let mut headers = EndpointHttpHeaders::new();
+            headers.insert("x-trace-id", "trace-123");
             Ok(EndpointHttpResponse {
                 status: 200,
                 headers,
@@ -319,15 +319,15 @@ impl EndpointHttpClient for RecordingEndpointHttpClient {
             seen_urls
                 .lock()
                 .expect("lock seen urls")
-                .push(request.url.as_str().to_owned());
+                .push(request.url.clone());
             let body = serde_json::to_vec(&json!({
-                "url": request.url.as_str(),
+                "url": request.url,
                 "max": request.response_max_bytes
             }))
             .expect("serialize mock body");
             Ok(EndpointHttpResponse {
                 status: 200,
-                headers: HeaderMap::new(),
+                headers: EndpointHttpHeaders::new(),
                 content_length: Some(u64::try_from(body.len()).expect("body length fits u64")),
                 body,
             })

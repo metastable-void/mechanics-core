@@ -21,20 +21,6 @@ Update this section on code additions.
 - Result: pass (2026-03-18).
 
 ## Active findings
-- 22) Public transport abstraction leaks `reqwest` internals across crate API surface
-  - Severity: medium
-  - Type: encapsulation / overly exposed API
-  - Evidence:
-  - `EndpointHttpRequest` uses `reqwest::Url` and `reqwest::header::HeaderMap` as public fields in `src/http/transport.rs`.
-  - `EndpointHttpResponse` exposes `reqwest::header::HeaderMap` publicly in `src/http/transport.rs`.
-  - Risk:
-  - External implementations of `EndpointHttpClient` must depend on `reqwest` types even when not using reqwest transport logic.
-  - This makes the transport abstraction less transport-agnostic and hardens coupling to one HTTP stack.
-  - Proposed direction:
-  - Introduce crate-owned transport-neutral request/response types (method, URL as string/newtype, plain header map, bytes body).
-  - Keep reqwest mapping isolated inside `ReqwestEndpointHttpClient`.
-  - Add compatibility shims/deprecations to avoid breaking downstream users abruptly.
-
 - 23) Public mutable fields on core config/job types allow invariant bypass at construction time
   - Severity: medium
   - Type: encapsulation / visibility
@@ -114,3 +100,4 @@ Update this section on code additions.
 - 19) Endpoint hot-path parse/allowlist allocation overhead: fixed by introducing per-job prepared endpoint caches (`PreparedHttpEndpoint`) in runtime state; caches are scoped to each `MechanicsJob` and dropped with job state (no cross-job leakage).
 - 20) Fixed 100ms worker/supervisor polling loops: fixed without regressing prior restart mitigations by switching workers to blocking channel select with explicit shutdown signaling, and supervisor to event-driven select plus periodic reconcile tick (for restart-window recovery logic).
 - 21) Per-worker Tokio runtime footprint scaling with worker count: documented as an intended design limitation (isolation-first worker model), not an immediate bug.
+- 22) Transport abstraction reqwest leak: fixed by introducing crate-owned transport-neutral endpoint types (`EndpointHttpHeaders`, string URL in `EndpointHttpRequest`) and confining reqwest conversions to `ReqwestEndpointHttpClient`; tests updated and passing.

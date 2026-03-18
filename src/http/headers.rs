@@ -1,4 +1,7 @@
-use reqwest::header::{HeaderMap, HeaderName};
+use super::EndpointHttpHeaders;
+#[cfg(test)]
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderName;
 use std::{
     collections::{HashMap, HashSet},
     io::{Error, ErrorKind},
@@ -42,24 +45,19 @@ pub(super) fn extract_exposed_response_headers(
     allowlist: &[String],
 ) -> std::io::Result<HashMap<String, String>> {
     let allowlisted = allowlisted_header_names(allowlist, "exposed_response_headers")?;
-    extract_exposed_response_headers_prepared(headers, &allowlisted)
+    extract_exposed_response_headers_prepared(&EndpointHttpHeaders::from_reqwest(headers), &allowlisted)
 }
 
 pub(super) fn extract_exposed_response_headers_prepared(
-    headers: &HeaderMap,
+    headers: &EndpointHttpHeaders,
     allowlisted: &HashSet<HeaderName>,
 ) -> std::io::Result<HashMap<String, String>> {
     let mut out = HashMap::new();
     for name in allowlisted {
-        let values = headers.get_all(name);
-        let mut parts = Vec::new();
-        for value in values {
-            let text = value
-                .to_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|_| String::from_utf8_lossy(value.as_bytes()).into_owned());
-            parts.push(text);
-        }
+        let parts = headers
+            .values(name.as_str())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         if !parts.is_empty() {
             out.insert(name.as_str().to_ascii_lowercase(), parts.join(", "));
         }
