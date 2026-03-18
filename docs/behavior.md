@@ -32,6 +32,10 @@ The crate API is exported from `src/lib.rs`:
 9. The module default export is invoked with one argument.
 10. Result is converted to JSON and returned.
 
+JSON-first constraint:
+- Runtime-facing job/config types are designed to be parsed from JSON (`serde`) as a first-class path.
+- Rust constructors/builders are convenience layers and must preserve behavior parity with serde validation semantics.
+
 ## JavaScript contract
 Your module should export a callable default export.
 

@@ -32,8 +32,10 @@ Update this section on code additions.
   - Callers can construct values that bypass intended preconditions (for example, empty `mod_source`, unreasonable execution limits) until later runtime validation paths.
   - Invariants are split across deserialization, pool construction, and runtime behavior instead of being enforced at type boundaries.
   - Proposed direction:
-  - Add validated constructors/builders for public-facing config/job types and migrate docs/examples toward them.
-  - Keep direct field access temporarily (for compatibility), but mark as soft-deprecated and tighten over a staged release.
+  - Preserve JSON-first API as a hard requirement: `serde_json` deserialization into public config/job types must remain first-class and ergonomic.
+  - Add validated constructors/builders for Rust-native construction paths, while keeping/describing serde-based validation as the primary JSON ingestion path.
+  - Keep direct field access temporarily (for compatibility), but move invariant checks into shared validation entrypoints used by both constructors and serde paths.
+  - If visibility tightening is introduced, do it in a staged/non-breaking manner and document migration steps.
 
 - 24) Internal pool state structs expose wide `pub(crate)` field surfaces, increasing cross-module coupling
   - Severity: low

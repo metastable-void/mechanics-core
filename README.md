@@ -21,6 +21,12 @@ across jobs.
 
 Public API re-exports are in `src/lib.rs`.
 
+## API design constraint
+- JSON-first is a core API constraint.
+- `MechanicsJob`, `MechanicsConfig`, `HttpEndpoint`, and related runtime-facing config types are intended to be first-class `serde_json` inputs.
+- Rust-side builder/constructor helpers should complement JSON ingestion, not replace it.
+- When tightening encapsulation/visibility, preserve non-breaking JSON parseability and keep validation behavior aligned between serde and Rust-native construction paths.
+
 ## Contributor quick start
 Prerequisites:
 - Rust toolchain with support for edition `2024` (`rustup default stable` is usually sufficient).
