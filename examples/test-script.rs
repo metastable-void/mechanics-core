@@ -7,7 +7,12 @@ fn main() -> std::io::Result<()> {
     let (config_path, js_path) = match (args.get(1), args.get(2)) {
         (Some(p), Some(p2)) => (p, p2),
         _ => {
-            println!("Usage: {} <json_config_path> <js_path>", &args[0]);
+            #[allow(clippy::get_first)]
+            let bin_name = args.get(0).map(String::as_str).unwrap_or("test-script");
+            println!(
+                "Usage: {} <json_config_path> <js_path>",
+                bin_name
+            );
             return Ok(());
         }
     };

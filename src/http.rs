@@ -1285,6 +1285,7 @@ fn validate_byte_len(
     Ok(())
 }
 
+#[allow(clippy::indexing_slicing)]
 fn percent_encode_component(input: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
 
@@ -1298,9 +1299,13 @@ fn percent_encode_component(input: &str) -> String {
             out.push(char::from(b));
             continue;
         }
+        let hi = usize::from(b >> 4);
+        let lo = usize::from(b & 0x0F);
+        // SAFETY: both nibbles are guaranteed in `0..=15`, matching `HEX` length.
+        debug_assert!(hi < HEX.len() && lo < HEX.len());
         out.push('%');
-        out.push(char::from(HEX[(b >> 4) as usize]));
-        out.push(char::from(HEX[(b & 0x0F) as usize]));
+        out.push(char::from(HEX[hi]));
+        out.push(char::from(HEX[lo]));
     }
     out
 }
