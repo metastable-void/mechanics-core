@@ -27,10 +27,9 @@ Public API re-exports are in `src/lib.rs`.
 - Provide a synchronous Rust API (`MechanicsPool`) for bounded worker-pool execution.
 - Keep runtime behavior stateless across jobs; no cross-job mutable runtime carryover.
 - Offer JSON-first runtime/job configuration (`serde` parseability is a first-class feature).
-- Provide preconfigured outbound HTTP endpoint execution via `mechanics:endpoint`, including:
-- URL/query/header policy enforcement from Rust config.
-- Request/response body modes and size/time limits.
-- Endpoint-level retry/backoff/rate-limit policy.
+- Provide preconfigured outbound HTTP endpoint execution via `mechanics:endpoint`, with URL/query/header policy enforcement from Rust config.
+- Support request/response body modes with explicit size/time limits.
+- Support endpoint-level retry/backoff/rate-limit policy.
 - Expose a minimal set of built-in utility modules useful for automation/orchestration scripts (`form-urlencoded`, `base64`, `hex`, `base32`, `rand`, `uuid`).
 - Support pluggable pool-level HTTP transport for deterministic/mock testing.
 
@@ -49,10 +48,7 @@ Public API re-exports are in `src/lib.rs`.
 
 ### Maturity path toward crates.io
 - Pre-publication: favor correctness, safety, and API clarity; breaking Rust API changes are allowed.
-- Stabilization phase (before crates.io release):
-- tighten compatibility guarantees,
-- freeze core config/job wire contracts,
-- provide migration notes for any remaining breaking changes.
+- Stabilization phase (before crates.io release): tighten compatibility guarantees, freeze core config/job wire contracts, and provide migration notes for any remaining breaking changes.
 
 ## API design constraint
 - JSON-first is a core API constraint.
@@ -106,6 +102,8 @@ export default function main(arg) {
 - Do not record arbitrary absolute filesystem paths.
 
 ## Documentation map
+Canonical project documentation is maintained in this GitHub repository.
+
 - [docs/behavior.md](docs/behavior.md): runtime behavior and API semantics.
 - [docs/development.md](docs/development.md): contributor workflow, checks, and change checklist.
 - [docs/audit-findings.md](docs/audit-findings.md): latest audit and resolved findings.

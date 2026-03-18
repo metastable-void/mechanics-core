@@ -2,6 +2,7 @@
 name = "mechanics-core"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 
 authors = ["metastable-void"]
 description = "mechanics automation framework (core)"
@@ -9,6 +10,9 @@ license = "Apache-2.0 OR MPL-2.0"
 readme = "README.md"
 repository = "https://github.com/metastable-void/mechanics-core"
 homepage = "https://github.com/metastable-void/mechanics-core"
+documentation = "https://github.com/metastable-void/mechanics-core#readme"
+keywords = ["automation", "orchestration", "javascript", "worker-pool", "boa"]
+categories = ["concurrency", "config", "api-bindings"]
 
 [dependencies]
 boa_engine = { version = "0.21.0", features = ["temporal"] }

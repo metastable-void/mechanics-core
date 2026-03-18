@@ -10,9 +10,10 @@ This report supersedes previous content of this file. Prior versions are archive
 ## Scope
 Update this section on code additions.
 
-- Runtime/pool execution paths: `src/pool.rs`, `src/runtime.rs`, `src/executor.rs`, `src/job.rs`, `src/error.rs`.
-- HTTP/config and endpoint protocol: `src/http.rs`, `src/runtime/builtins/*.rs`, `src/http/tests/*`, `src/pool/tests/*`.
-- Documentation/type contracts: `README.md`, `docs/behavior.md`, `ts-types/*.d.ts`.
+- Runtime/pool execution and lifecycle behavior.
+- HTTP/config and endpoint protocol behavior.
+- Runtime built-in module behavior and contracts.
+- Documentation and type/schema contract alignment.
 
 ## Verification performed
 - `cargo test --all-targets`
@@ -25,19 +26,19 @@ Update this section on code additions.
 
 ## Additional audit notes
 - Undefined behavior: no active UB found in normal runtime paths; prior `unsafe_ignore_trace` safety notes were added.
-- Unimplemented code paths: no `todo!`/`unimplemented!` in production code under `src/`.
+- Unimplemented stubs: no active `todo!`/`unimplemented!` markers in production runtime code.
 - Panic risk: no production-path `panic!/unwrap()/expect()` crash points found in reviewed runtime code.
-- JSON-first shape artifacts: maintain and update `ts-types/mechanics-json-shapes.d.ts` and `json-schema/*.schema.json` when serde-visible payload shapes change.
+- JSON-first shape artifacts: keep TypeScript declarations and JSON Schemas synchronized whenever serde-visible payload shapes change.
 
 ## Done summary
 
 - 1) Restart limiter could permanently brick pool after crash burst: fixed with periodic worker reconciliation and restart recovery test.
 - 2) VM job queue state leak across job boundaries: fixed with queue cleanup after each run and isolation regression test.
 - 3) `MechanicsPool::drop` long/unbounded block risk: fixed by removing blocking shutdown-send path and validating drop behavior with tests.
-- 4) Protocol contradiction for explicit `body: null`: fixed (`null` now means JSON null; `undefined`/omitted means absent), docs/tests updated.
+- 4) Protocol contradiction for explicit `body: null`: fixed (`null` now means JSON null; `undefined`/omitted means absent), with documentation and tests updated.
 - 5) Non-2xx opt-in docs mismatch: fixed docs to reflect response parsing by `response_body_type`.
 - 6) Optional query mode docs gap with defaults: fixed docs to include explicit resolution precedence and empty-default semantics.
-- 7) Constructor docs/behavior mismatch for `run_timeout` overflow: fixed with constructor-time validation and test.
+- 7) Constructor documentation/behavior mismatch for `run_timeout` overflow: fixed with constructor-time validation and test coverage.
 - 8) Unsafe tracing invariants were implicit: fixed by adding explicit SAFETY comments for `unsafe_ignore_trace` fields.
 - 9) Default test coverage gaps for high-risk behavior: fixed with deterministic local tests (queue pressure, restart recovery, disconnect paths).
 - 10) Async API intent not documented: fixed docs to state sync API is intentional and Tokio usage should be through `spawn_blocking`; added interop test.
@@ -46,7 +47,7 @@ Update this section on code additions.
 - 13) HTTP method set too narrow: fixed by adding `PATCH`/`HEAD`/`OPTIONS` and aligning body policy to RFC 9110 baseline.
 - 14) Public pool stats API missing: fixed with synchronous non-blocking `MechanicsPool::stats()` returning `MechanicsPoolStats` (worker/queue/restart snapshot) and non-blocking behavior test.
 - 15) Config composition helpers missing: fixed with validated `with_endpoint`, `with_endpoint_overrides`, and `without_endpoint` APIs (per-job config composition).
-- 16) Orchestration-primitives gap reframed and addressed: generalized orchestration module deemed unnecessary for this crate scope; added focused `mechanics:uuid` utility module (`v3`/`v4`/`v5`/`v6`/`v7`/`nil`/`max`) with docs/types/tests.
+- 16) Orchestration-primitives gap reframed and addressed: generalized orchestration module deemed unnecessary for this crate scope; added focused `mechanics:uuid` utility module (`v3`/`v4`/`v5`/`v6`/`v7`/`nil`/`max`) with documentation, types, and test coverage.
 - 17) Endpoint transport was fixed to reqwest internals: fixed with pool-level pluggable transport (`EndpointHttpClient`) plus default `ReqwestEndpointHttpClient`, including deterministic injected-client test coverage and docs.
 - 18) Late response-size enforcement in default reqwest transport: fixed by enforcing max-bytes during streaming body reads inside `ReqwestEndpointHttpClient` (before full buffering), with endpoint-side cap checks retained as defense-in-depth.
 - 19) Endpoint hot-path parse/allowlist allocation overhead: fixed by introducing per-job prepared endpoint caches (`PreparedHttpEndpoint`) in runtime state; caches are scoped to each `MechanicsJob` and dropped with job state (no cross-job leakage).
@@ -56,4 +57,4 @@ Update this section on code additions.
 - 23) Public mutable core config/job fields bypassed invariants: fixed by tightening external field visibility (`pub(crate)`), adding validated public constructors/builders (`MechanicsJob::new`, `MechanicsExecutionLimits::new`, `MechanicsPoolConfig` builder methods), and centralizing pool-config validation while preserving JSON-first serde ingestion semantics.
 - 24) Internal pool state overexposed via wide `pub(crate)` fields: fixed by making `RestartGuard`, `PoolJob`, `WorkerExit`, `WorkerHandle`, and `MechanicsPoolShared` fields private and introducing narrow methods (`job_sender`, `mark_closed`, restart snapshots/recording, worker shutdown/join helpers, etc.); pool logic/tests now use these accessors instead of direct mutation.
 - 25) Redundant per-call static endpoint invariant checks: fixed by removing duplicated slot/spec consistency scans from `build_url_prepared` hot path while keeping dynamic request-input validation, and adding `debug_assert!` invariants so internal drift is still caught in debug builds.
-- 26) Redundant runtime synthetic-module forwarding layer: fixed by removing `src/runtime/synthetic_modules.rs` and calling `builtins::bundle_builtin_modules(...)` directly from `RuntimeInternal`, reducing indirection while preserving behavior.
+- 26) Redundant runtime synthetic-module forwarding layer: fixed by removing the forwarding adapter and calling the builtins bundle helper directly from runtime initialization, reducing indirection while preserving behavior.
