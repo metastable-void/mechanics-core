@@ -8,7 +8,10 @@ use crate::internal::http::{
     template::percent_encode_component,
 };
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
-use std::io::{Error, ErrorKind};
+use std::{
+    collections::HashSet,
+    io::{Error, ErrorKind},
+};
 
 impl HttpEndpoint {
     pub(super) fn effective_request_body_type(&self) -> EndpointBodyType {
@@ -70,6 +73,7 @@ impl HttpEndpoint {
             headers.insert(name, value);
         }
 
+        let mut seen_override_names = HashSet::new();
         for (k, v) in &options.headers {
             let name = HeaderName::try_from(k.as_str()).map_err(|e| {
                 Error::new(
@@ -77,6 +81,14 @@ impl HttpEndpoint {
                     format!("invalid override header name `{k}`: {e}"),
                 )
             })?;
+            if !seen_override_names.insert(name.clone()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "duplicate override header `{k}` in options.headers (case-insensitive)"
+                    ),
+                ));
+            }
             if !prepared.allowed_overrides.contains(&name) {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,

@@ -30,6 +30,18 @@ impl HttpEndpoint {
             "overridable_request_headers",
         )?;
         validate_header_name_list(&self.exposed_response_headers, "exposed_response_headers")?;
+        let mut seen_config_header_names = HashSet::new();
+        for name in self.headers.keys() {
+            let normalized = name.to_ascii_lowercase();
+            if !seen_config_header_names.insert(normalized) {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    format!(
+                        "duplicate header name `{name}` in endpoint headers (case-insensitive)"
+                    ),
+                ));
+            }
+        }
 
         let (chunks, slot_names) = parse_url_template(&self.url_template)?;
         let slot_set: HashSet<&str> = slot_names.iter().map(String::as_str).collect();

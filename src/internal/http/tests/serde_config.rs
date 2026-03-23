@@ -86,6 +86,25 @@ fn mechanics_config_rejects_invalid_header_allowlist_name() {
 }
 
 #[test]
+fn mechanics_config_rejects_case_insensitive_duplicate_endpoint_headers() {
+    let endpoint: HttpEndpoint = serde_json::from_value(json!({
+        "method": "post",
+        "url_template": "https://example.com/{id}",
+        "url_param_specs": { "id": {} },
+        "headers": {
+            "x-dup": "one",
+            "X-DUP": "two"
+        }
+    }))
+    .expect("endpoint itself should deserialize");
+
+    let mut endpoints = HashMap::new();
+    endpoints.insert("bad".to_owned(), endpoint);
+    let err = MechanicsConfig::new(endpoints).expect_err("config should reject duplicate headers");
+    assert!(err.msg().contains("duplicate header name"));
+}
+
+#[test]
 fn mechanics_config_rejects_unknown_endpoint_field() {
     let err = serde_json::from_value::<MechanicsConfig>(json!({
         "endpoints": {

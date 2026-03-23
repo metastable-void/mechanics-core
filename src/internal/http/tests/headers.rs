@@ -53,6 +53,21 @@ fn build_headers_rejects_non_allowlisted_override() {
 }
 
 #[test]
+fn build_headers_rejects_case_insensitive_duplicate_overrides() {
+    let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://example.com", HashMap::new())
+        .with_overridable_request_headers(vec!["x-dup".to_owned()]);
+    let mut options = EndpointCallOptions::default();
+    options.headers.insert("x-dup".to_owned(), "one".to_owned());
+    options.headers.insert("X-Dup".to_owned(), "two".to_owned());
+
+    let err = endpoint
+        .build_headers(None, &options)
+        .expect_err("case-insensitive duplicate overrides in the same layer should fail");
+    assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    assert!(err.to_string().contains("duplicate override header"));
+}
+
+#[test]
 fn build_headers_applies_intended_precedence_order() {
     let endpoint = HttpEndpoint::new(
         HttpMethod::Post,

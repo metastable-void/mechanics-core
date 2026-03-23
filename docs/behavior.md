@@ -101,6 +101,10 @@ Resolution behavior:
 - Configured headers are validated; invalid names/values fail the call.
 - JS `options.headers` can override only names allowlisted by endpoint `overridable_request_headers` (case-insensitive).
 - Header precedence is: auto defaults < configured endpoint headers < JS allowlisted overrides.
+- Duplicate header names are rejected within one layer (case-insensitive):
+- endpoint config `headers` must not define the same header name twice with different casing,
+- JS `options.headers` must not define duplicate header names with different casing.
+- Duplicates across different layers are allowed and resolved by precedence (higher layer overrides lower layer).
 - If missing, `User-Agent` is injected automatically.
 - If request body is present and `Content-Type` is missing, a default content type is injected based on `request_body_type`.
 - By default, non-2xx HTTP statuses fail the call.
