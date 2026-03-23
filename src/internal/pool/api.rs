@@ -117,6 +117,9 @@ impl MechanicsPool {
             client
         } else {
             let reqwest_client = reqwest::Client::builder()
+                // Avoid reusing stale pooled keep-alive connections across long-running,
+                // bursty job workloads. This favors stability over connection reuse.
+                .pool_max_idle_per_host(0)
                 .build()
                 .map_err(into_io_error)
                 .map_err(|e| MechanicsError::runtime_pool(e.to_string()))?;
