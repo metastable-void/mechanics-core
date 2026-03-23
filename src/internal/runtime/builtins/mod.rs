@@ -1,11 +1,9 @@
 use super::{MechanicsState, buffer_like};
-use crate::{
-    internal::{
-        executor::CustomModuleLoader,
-        http::{
-            EndpointCallBody, EndpointCallOptions, EndpointResponse, EndpointResponseBody,
-            into_io_error,
-        },
+use crate::internal::{
+    executor::CustomModuleLoader,
+    http::{
+        EndpointCallBody, EndpointCallOptions, EndpointResponse, EndpointResponseBody,
+        into_io_error,
     },
 };
 use boa_engine::{

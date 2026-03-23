@@ -230,8 +230,8 @@ fn endpoint_non_success_status_is_error_by_default() {
 fn endpoint_non_success_status_can_be_allowed() {
     let (url, server) =
         spawn_json_server_with_status(Duration::from_millis(0), 500, r#"{"ok":false}"#);
-    let endpoint = HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new())
-        .with_allow_non_2xx_status(true);
+    let endpoint =
+        HttpEndpoint::new(HttpMethod::Post, &url, HashMap::new()).with_allow_non_2xx_status(true);
     let config = endpoint_config("failing", endpoint);
 
     let pool = MechanicsPool::new(MechanicsPoolConfig {

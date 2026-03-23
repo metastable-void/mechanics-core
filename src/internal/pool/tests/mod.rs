@@ -13,10 +13,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::{
-    Arc, Barrier,
-    atomic::AtomicBool,
-};
+use std::sync::{Arc, Barrier, atomic::AtomicBool};
 use std::thread;
 use std::time::{Duration, Instant};
 

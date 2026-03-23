@@ -1,9 +1,7 @@
-use crate::{
-    internal::{
-        error::MechanicsError,
-        http::{ReqwestEndpointHttpClient, into_io_error},
-        job::MechanicsJob,
-    },
+use crate::internal::{
+    error::MechanicsError,
+    http::{ReqwestEndpointHttpClient, into_io_error},
+    job::MechanicsJob,
 };
 use crossbeam_channel::{
     RecvTimeoutError, SendTimeoutError, Sender, TrySendError, bounded, select, tick, unbounded,
@@ -19,7 +17,9 @@ use std::{
 };
 
 use super::{
-    config::MechanicsPoolConfig, shared::MechanicsPoolShared, worker::{PoolJob, PoolMessage},
+    config::MechanicsPoolConfig,
+    shared::MechanicsPoolShared,
+    worker::{PoolJob, PoolMessage},
 };
 
 /// Thread pool of script runtimes for executing [`MechanicsJob`] workloads.

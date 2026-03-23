@@ -5,7 +5,7 @@ use boa_engine::{
     module::ModuleLoader,
 };
 use futures_concurrency::future::FutureGroup;
-use futures_lite::{StreamExt, future};
+use futures_lite::StreamExt;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, VecDeque},
@@ -97,6 +97,24 @@ impl Queue {
         later
             .millis_since_epoch()
             .saturating_sub(earlier.millis_since_epoch())
+    }
+
+    fn has_due_timeout_job(&self, now: JsInstant) -> bool {
+        self.next_timeout_at().is_some_and(|at| at <= now)
+    }
+
+    fn wait_budget(&self, now: JsInstant) -> Option<Duration> {
+        let timeout_budget = self.next_timeout_at().map(|next_timeout_at| {
+            Duration::from_millis(Self::millis_until_or_zero(next_timeout_at, now))
+        });
+        let deadline_budget = (*self.deadline.borrow())
+            .map(|deadline| Duration::from_millis(Self::millis_until_or_zero(deadline, now)));
+        match (timeout_budget, deadline_budget) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
     }
 
     /// Executes all due timeout jobs and keeps only future/cancel-surviving entries.
@@ -240,25 +258,36 @@ impl JobExecutor for Queue {
                     }
                 }
             } else {
-                let deadline = *self.deadline.borrow();
-                let polled = if let Some(deadline) = deadline {
-                    let remaining = {
-                        let ctx_ref = context.borrow();
-                        let now = ctx_ref.clock().now();
-                        if deadline <= now {
-                            return Err(Self::timeout_error());
-                        }
-                        Duration::from_millis(Self::millis_until_or_zero(deadline, now))
-                    };
-                    match tokio::time::timeout(remaining, future::poll_once(group.next())).await {
-                        Ok(result) => result,
-                        Err(_) => return Err(Self::timeout_error()),
-                    }
-                } else {
-                    future::poll_once(group.next()).await
+                let (has_sync_ready_jobs, wait_budget) = {
+                    let ctx_ref = context.borrow();
+                    let now = ctx_ref.clock().now();
+                    (
+                        !self.promise_jobs.borrow().is_empty()
+                            || !self.generic_jobs.borrow().is_empty()
+                            || self.has_due_timeout_job(now),
+                        self.wait_budget(now),
+                    )
                 };
 
-                if let Some(Err(err)) = polled.flatten() {
+                // If macrotask/microtask work is immediately available, do not wait on async
+                // completions first. Otherwise, sleep efficiently until async work completes or
+                // the next timeout/deadline boundary.
+                let next_result = if has_sync_ready_jobs {
+                    None
+                } else if let Some(wait_budget) = wait_budget {
+                    if wait_budget.is_zero() {
+                        None
+                    } else {
+                        match tokio::time::timeout(wait_budget, group.next()).await {
+                            Ok(result) => result,
+                            Err(_) => None,
+                        }
+                    }
+                } else {
+                    group.next().await
+                };
+
+                if let Some(Err(err)) = next_result {
                     return Err(err);
                 }
             }

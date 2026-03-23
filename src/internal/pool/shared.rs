@@ -1,8 +1,6 @@
-use crate::{
-    internal::{
-        error::MechanicsError, http::EndpointHttpClient, job::MechanicsExecutionLimits,
-        runtime::RuntimeInternal,
-    },
+use crate::internal::{
+    error::MechanicsError, http::EndpointHttpClient, job::MechanicsExecutionLimits,
+    runtime::RuntimeInternal,
 };
 use crossbeam_channel::{Receiver, Sender, bounded, select};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -260,10 +258,7 @@ impl MechanicsPoolShared {
 
         {
             let mut workers = shared.workers_write();
-            workers.insert(
-                worker_id,
-                WorkerHandle::new(handle, shutdown_tx),
-            );
+            workers.insert(worker_id, WorkerHandle::new(handle, shutdown_tx));
         }
 
         match ready_rx.recv() {

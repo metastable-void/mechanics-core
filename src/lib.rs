@@ -16,9 +16,7 @@ pub(crate) mod internal;
 
 /// Job-related functionalities.
 pub mod job {
-    pub use crate::internal::http::{
-        MechanicsConfig,
-    };
+    pub use crate::internal::http::MechanicsConfig;
 
     pub use crate::internal::job::{MechanicsExecutionLimits, MechanicsJob};
 }
@@ -30,15 +28,15 @@ pub use internal::pool::{MechanicsPool, MechanicsPoolConfig, MechanicsPoolStats}
 /// Endpoint related exports.
 pub mod endpoint {
     pub use crate::internal::http::{
-        EndpointBodyType, EndpointRetryPolicy, HttpEndpoint, HttpMethod,
-        QuerySpec, SlottedQueryMode, UrlParamSpec,
+        EndpointBodyType, EndpointRetryPolicy, HttpEndpoint, HttpMethod, QuerySpec,
+        SlottedQueryMode, UrlParamSpec,
     };
 
     /// Pluggable HTTP client module.
     pub mod http_client {
         pub use crate::internal::http::{
-            EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest,
-            EndpointHttpRequestBody, EndpointHttpResponse, ReqwestEndpointHttpClient,
+            EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
+            EndpointHttpResponse, ReqwestEndpointHttpClient,
         };
     }
 }

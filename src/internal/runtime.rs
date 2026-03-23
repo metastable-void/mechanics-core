@@ -1,10 +1,8 @@
-use crate::{
-    internal::{
-        error::MechanicsError,
-        executor::{CustomModuleLoader, Queue},
-        http::{EndpointHttpClient, MechanicsConfig, PreparedHttpEndpoint},
-        job::{MechanicsExecutionLimits, MechanicsJob},
-    },
+use crate::internal::{
+    error::MechanicsError,
+    executor::{CustomModuleLoader, Queue},
+    http::{EndpointHttpClient, MechanicsConfig, PreparedHttpEndpoint},
+    job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
     Context, JsData, JsError, JsNativeError, JsResult, JsValue, Module, Source, Trace,
