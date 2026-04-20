@@ -1,5 +1,5 @@
 use super::{MechanicsState, endpoint_response_to_js_value, parse_endpoint_call_options_js};
-use crate::internal::executor::CustomModuleLoader;
+use crate::internal::{executor::CustomModuleLoader, http::execute_endpoint};
 use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, Module, NativeFunction, js_string,
     module::SyntheticModuleInitializer, object::FunctionObjectBuilder,
@@ -33,16 +33,16 @@ pub(super) fn register(loader: &Rc<CustomModuleLoader>, context: &mut Context) {
                 JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")),
             )?;
 
-            let res = endpoint
-                .execute(
-                    state.endpoint_http_client(),
-                    prepared,
-                    state.default_timeout_ms(),
-                    state.default_response_max_bytes(),
-                    &req_options,
-                )
-                .await
-                .map_err(JsError::from_rust)?;
+            let res = execute_endpoint(
+                endpoint,
+                state.endpoint_http_client(),
+                prepared,
+                state.default_timeout_ms(),
+                state.default_response_max_bytes(),
+                &req_options,
+            )
+            .await
+            .map_err(JsError::from_rust)?;
 
             endpoint_response_to_js_value(res, &mut ctx.borrow_mut())
         }),

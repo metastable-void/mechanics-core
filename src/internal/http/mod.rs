@@ -1,25 +1,25 @@
-mod config;
 mod endpoint;
 mod headers;
 mod options;
-mod query;
-mod retry;
-mod template;
 mod transport;
+mod wrappers;
 
-pub use config::MechanicsConfig;
-pub use endpoint::{EndpointBodyType, HttpEndpoint, QuerySpec, SlottedQueryMode, UrlParamSpec};
-pub use retry::EndpointRetryPolicy;
+pub use mechanics_config::{EndpointBodyType, HttpEndpoint, MechanicsConfig, PreparedHttpEndpoint};
+#[cfg(test)]
+pub use mechanics_config::{
+    EndpointRetryPolicy, HttpMethod, QuerySpec, SlottedQueryMode, UrlParamSpec,
+};
 pub use transport::{
     EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
-    EndpointHttpResponse, HttpMethod, ReqwestEndpointHttpClient,
+    EndpointHttpResponse, ReqwestEndpointHttpClient,
 };
 
-pub(crate) use endpoint::PreparedHttpEndpoint;
 pub(crate) use options::{
     EndpointCallBody, EndpointCallOptions, EndpointResponse, EndpointResponseBody,
 };
+pub(crate) use endpoint::execute_endpoint;
 pub(crate) use transport::into_io_error;
+pub(crate) use wrappers::BoaMechanicsConfig;
 
 #[cfg(test)]
 pub(crate) use options::parse_endpoint_call_options;

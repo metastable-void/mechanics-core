@@ -9,6 +9,15 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.2.3]
+
+- Extracted schema/config types into `mechanics-config` and now depend on
+  `mechanics-config = "0.1.0"`.
+- Added Boa GC wrapper newtypes over extracted schema types via
+  `#[unsafe_ignore_trace]`.
+- Preserved compatibility by re-exporting endpoint/config types at
+  `mechanics_core::endpoint::*` and `mechanics_core::job::MechanicsConfig`.
+
 ## [0.2.2]
 
 Current published baseline. Git history is the authoritative

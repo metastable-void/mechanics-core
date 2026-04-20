@@ -202,7 +202,7 @@ mod tests {
 
         assert_eq!(decoded.module_source(), job.module_source());
         assert_eq!(decoded.arg(), job.arg());
-        assert_eq!(decoded.config().endpoints.len(), 0);
+        assert_eq!(decoded.config().endpoints().len(), 0);
     }
 
     #[test]

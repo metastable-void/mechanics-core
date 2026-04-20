@@ -1,4 +1,5 @@
 use super::super::*;
+use super::super::execute::HttpEndpointCompatExt;
 
 #[test]
 fn optional_allow_empty_query_mode_emits_empty_values() {
@@ -15,7 +16,7 @@ fn optional_allow_empty_query_mode_emits_empty_values() {
     let mut options = EndpointCallOptions::default();
     options.queries.insert("q".to_owned(), "".to_owned());
     let url = endpoint
-        .build_url(&options)
+        .build_url_for_options(&options)
         .expect("optional_allow_empty should emit empty value");
     assert_eq!(url.query(), Some("q="));
 }
@@ -36,7 +37,7 @@ fn build_url_rejects_unknown_queries_key() {
         .queries
         .insert("unexpected".to_owned(), "x".to_owned());
     let err = endpoint
-        .build_url(&options)
+        .build_url_for_options(&options)
         .expect_err("unknown query key should be rejected");
     assert!(err.to_string().contains("unknown queries key"));
 }
@@ -55,7 +56,7 @@ fn required_query_rejects_empty_value() {
     let mut options = EndpointCallOptions::default();
     options.queries.insert("q".to_owned(), "".to_owned());
     let err = endpoint
-        .build_url(&options)
+        .build_url_for_options(&options)
         .expect_err("required mode should reject empty value");
     assert!(err.to_string().contains("missing or empty"));
 }
@@ -74,7 +75,7 @@ fn optional_query_omits_empty_value() {
     let mut options = EndpointCallOptions::default();
     options.queries.insert("q".to_owned(), "".to_owned());
     let url = endpoint
-        .build_url(&options)
+        .build_url_for_options(&options)
         .expect("optional mode should omit empty value");
     assert!(url.query().is_none());
 }

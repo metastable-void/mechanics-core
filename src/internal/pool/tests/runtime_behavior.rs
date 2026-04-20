@@ -240,7 +240,7 @@ impl EndpointHttpClient for MockEndpointHttpClient {
     ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
         Box::pin(async move {
-            if request.method != HttpMethod::Get {
+            if request.method.as_str() != "GET" {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "expected GET method in mock client",

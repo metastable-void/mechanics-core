@@ -1,4 +1,5 @@
 use super::super::*;
+use super::super::execute::HttpEndpointCompatExt;
 use serde_json::json;
 
 #[test]
@@ -15,7 +16,7 @@ fn endpoint_deserializes_from_snake_case_body_types() {
     let mut options = EndpointCallOptions::default();
     options.url_params.insert("id".to_owned(), "1".to_owned());
     let url = endpoint
-        .build_url(&options)
+        .build_url_for_options(&options)
         .expect("deserialized endpoint should build URL");
     assert_eq!(url.as_str(), "https://example.com/1");
 }
@@ -32,9 +33,8 @@ fn mechanics_config_new_rejects_invalid_endpoint_configuration() {
     endpoints.insert("bad".to_owned(), endpoint);
 
     let err = MechanicsConfig::new(endpoints).expect_err("config should fail fast");
-    assert!(matches!(err, crate::MechanicsError::RuntimePool(_)));
     assert!(
-        err.msg()
+        err.to_string()
             .contains("missing url_param_specs entry for slot `id`")
     );
 }
@@ -82,7 +82,7 @@ fn mechanics_config_rejects_invalid_header_allowlist_name() {
     let mut endpoints = HashMap::new();
     endpoints.insert("bad".to_owned(), endpoint);
     let err = MechanicsConfig::new(endpoints).expect_err("config should fail fast");
-    assert!(err.msg().contains("invalid header name `bad header`"));
+    assert!(err.to_string().contains("invalid header name `bad header`"));
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn mechanics_config_rejects_case_insensitive_duplicate_endpoint_headers() {
     let mut endpoints = HashMap::new();
     endpoints.insert("bad".to_owned(), endpoint);
     let err = MechanicsConfig::new(endpoints).expect_err("config should reject duplicate headers");
-    assert!(err.msg().contains("duplicate header name"));
+    assert!(err.to_string().contains("duplicate header name"));
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn mechanics_config_rejects_empty_default_for_optional_allow_empty_with_min_byte
     endpoints.insert("bad".to_owned(), endpoint);
     let err = MechanicsConfig::new(endpoints)
         .expect_err("empty optional_allow_empty default should violate min_bytes");
-    assert!(err.msg().contains("too short"));
+    assert!(err.to_string().contains("too short"));
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn endpoint_deserializes_additional_http_methods() {
         let mut options = EndpointCallOptions::default();
         options.url_params.insert("id".to_owned(), "1".to_owned());
         let url = endpoint
-            .build_url(&options)
+            .build_url_for_options(&options)
             .expect("deserialized endpoint should build URL");
         assert_eq!(url.as_str(), "https://example.com/1");
     }
@@ -244,16 +244,16 @@ fn mechanics_config_composition_helpers_apply_validation_and_overrides() {
         .clone()
         .with_endpoint("base", over.clone())
         .expect("single endpoint override should validate");
-    assert_eq!(cfg.endpoints["base"].method, HttpMethod::Patch);
+    assert_eq!(cfg.endpoints()["base"].method(), HttpMethod::Patch);
 
     let cfg = base
         .with_endpoint_overrides(HashMap::from([("extra".to_owned(), over)]))
         .expect("bulk overrides should validate");
-    assert!(cfg.endpoints.contains_key("base"));
-    assert!(cfg.endpoints.contains_key("extra"));
+    assert!(cfg.endpoints().contains_key("base"));
+    assert!(cfg.endpoints().contains_key("extra"));
 
     let removed = cfg.without_endpoint("extra");
-    assert!(!removed.endpoints.contains_key("extra"));
+    assert!(!removed.endpoints().contains_key("extra"));
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn mechanics_config_composition_helpers_reject_invalid_endpoint() {
         .with_endpoint("bad", invalid)
         .expect_err("invalid endpoint must be rejected");
     assert!(
-        err.msg()
+        err.to_string()
             .contains("missing url_param_specs entry for slot `id`")
     );
 }

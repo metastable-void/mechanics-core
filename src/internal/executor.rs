@@ -278,10 +278,9 @@ impl JobExecutor for Queue {
                     if wait_budget.is_zero() {
                         None
                     } else {
-                        match tokio::time::timeout(wait_budget, group.next()).await {
-                            Ok(result) => result,
-                            Err(_) => None,
-                        }
+                        tokio::time::timeout(wait_budget, group.next())
+                            .await
+                            .unwrap_or_default()
                     }
                 } else {
                     group.next().await

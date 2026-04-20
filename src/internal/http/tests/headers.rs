@@ -1,4 +1,5 @@
 use super::super::*;
+use super::super::execute::HttpEndpointCompatExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 #[test]
@@ -7,7 +8,7 @@ fn build_headers_rejects_invalid_name() {
     headers.insert("bad header".to_owned(), "ok".to_owned());
     let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://example.com", headers);
     let err = endpoint
-        .build_headers(Some("application/json"), &EndpointCallOptions::default())
+        .build_headers_for_options(Some("application/json"), &EndpointCallOptions::default())
         .expect_err("invalid header name must fail");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert!(err.to_string().contains("invalid header name"));
@@ -30,7 +31,7 @@ fn build_headers_allows_case_insensitive_allowlisted_overrides() {
     );
 
     let headers = endpoint
-        .build_headers(Some("application/json"), &options)
+        .build_headers_for_options(Some("application/json"), &options)
         .expect("allowlisted overrides should succeed");
     assert_eq!(headers["x-fixed"], "overridden");
     assert_eq!(headers["content-type"], "application/custom+json");
@@ -46,7 +47,7 @@ fn build_headers_rejects_non_allowlisted_override() {
         .insert("x-not-allowed".to_owned(), "value".to_owned());
 
     let err = endpoint
-        .build_headers(None, &options)
+        .build_headers_for_options(None, &options)
         .expect_err("non-allowlisted override should fail");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert!(err.to_string().contains("not allowlisted"));
@@ -61,7 +62,7 @@ fn build_headers_rejects_case_insensitive_duplicate_overrides() {
     options.headers.insert("X-Dup".to_owned(), "two".to_owned());
 
     let err = endpoint
-        .build_headers(None, &options)
+        .build_headers_for_options(None, &options)
         .expect_err("case-insensitive duplicate overrides in the same layer should fail");
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
     assert!(err.to_string().contains("duplicate override header"));
@@ -85,7 +86,7 @@ fn build_headers_applies_intended_precedence_order() {
         .insert("content-type".to_owned(), "override/type".to_owned());
 
     let headers = endpoint
-        .build_headers(Some("application/json"), &options)
+        .build_headers_for_options(Some("application/json"), &options)
         .expect("header layering should succeed");
 
     // JS override beats configured and auto default.

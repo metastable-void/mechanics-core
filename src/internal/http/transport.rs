@@ -1,6 +1,4 @@
-use boa_engine::{JsData, Trace};
-use boa_gc::Finalize;
-use serde::{Deserialize, Serialize};
+use mechanics_config::HttpMethod;
 use serde_json::Value;
 use std::{
     collections::HashSet,
@@ -15,53 +13,21 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
     std::io::Error::other(e)
 }
 
-/// Supported HTTP methods for runtime-managed endpoint calls.
-#[derive(JsData, Trace, Finalize, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Hash)]
-#[serde(rename_all = "lowercase")]
-pub enum HttpMethod {
-    /// HTTP `GET`.
-    Get,
-    /// HTTP `POST`.
-    Post,
-    /// HTTP `PUT`.
-    Put,
-    /// HTTP `PATCH`.
-    Patch,
-    /// HTTP `DELETE`.
-    Delete,
-    /// HTTP `HEAD`.
-    Head,
-    /// HTTP `OPTIONS`.
-    Options,
+pub(crate) trait HttpMethodReqwestExt {
+    fn as_reqwest_method(&self) -> reqwest::Method;
 }
 
-impl HttpMethod {
-    pub(crate) fn as_str(&self) -> &'static str {
+impl HttpMethodReqwestExt for HttpMethod {
+    fn as_reqwest_method(&self) -> reqwest::Method {
         match self {
-            Self::Get => "GET",
-            Self::Post => "POST",
-            Self::Put => "PUT",
-            Self::Patch => "PATCH",
-            Self::Delete => "DELETE",
-            Self::Head => "HEAD",
-            Self::Options => "OPTIONS",
+            HttpMethod::Get => reqwest::Method::GET,
+            HttpMethod::Post => reqwest::Method::POST,
+            HttpMethod::Put => reqwest::Method::PUT,
+            HttpMethod::Patch => reqwest::Method::PATCH,
+            HttpMethod::Delete => reqwest::Method::DELETE,
+            HttpMethod::Head => reqwest::Method::HEAD,
+            HttpMethod::Options => reqwest::Method::OPTIONS,
         }
-    }
-
-    pub(crate) fn as_reqwest_method(&self) -> reqwest::Method {
-        match self {
-            Self::Get => reqwest::Method::GET,
-            Self::Post => reqwest::Method::POST,
-            Self::Put => reqwest::Method::PUT,
-            Self::Patch => reqwest::Method::PATCH,
-            Self::Delete => reqwest::Method::DELETE,
-            Self::Head => reqwest::Method::HEAD,
-            Self::Options => reqwest::Method::OPTIONS,
-        }
-    }
-
-    pub(crate) fn supports_request_body(&self) -> bool {
-        matches!(self, Self::Post | Self::Put | Self::Patch)
     }
 }
 

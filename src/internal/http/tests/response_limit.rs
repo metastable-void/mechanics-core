@@ -1,4 +1,5 @@
 use super::super::*;
+use super::super::execute::extend_body_with_limit;
 
 #[test]
 fn extend_body_with_limit_accepts_exact_boundary() {
@@ -26,5 +27,5 @@ fn endpoint_deserializes_response_max_bytes_from_snake_case() {
     }))
     .expect("endpoint config should deserialize response_max_bytes");
 
-    assert_eq!(endpoint.response_max_bytes, Some(1024));
+    assert_eq!(endpoint.response_max_bytes(), Some(1024));
 }

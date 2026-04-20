@@ -1,34 +1,16 @@
 use super::*;
 
 #[test]
-fn invalid_endpoint_header_is_reported_as_execution_error() {
-    let pool = MechanicsPool::new(MechanicsPoolConfig {
-        worker_count: 1,
-        ..Default::default()
-    })
-    .expect("create pool");
-
+fn invalid_endpoint_header_is_rejected_during_config_validation() {
     let mut headers = HashMap::new();
     headers.insert("bad header".to_owned(), "value".to_owned());
     let endpoint = HttpEndpoint::new(HttpMethod::Post, "https://example.com/anything", headers);
-    let config = endpoint_config("bad", endpoint);
 
-    let source = r#"
-            import endpoint from "mechanics:endpoint";
-            export default async function main(arg) {
-                return await endpoint("bad", { body: arg });
-            }
-        "#;
-    let job = make_job(source, config, json!({"hello":"headers"}));
-    let err = pool
-        .run(job)
-        .expect_err("invalid configured header must fail");
-    match err {
-        MechanicsError::Execution(msg) => {
-            assert!(msg.contains("invalid header name"));
-        }
-        other => panic!("unexpected error kind: {other}"),
-    }
+    let mut endpoints = HashMap::new();
+    endpoints.insert("bad".to_owned(), endpoint);
+    let err = MechanicsConfig::new(endpoints)
+        .expect_err("invalid configured header must fail during config validation");
+    assert!(err.to_string().contains("invalid header name"));
 }
 
 #[test]

@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::internal::http::EndpointHttpHeaders;
 use serde_json::json;
 
 #[test]
@@ -106,9 +105,7 @@ fn retry_policy_uses_retry_after_for_rate_limit() {
         retry_on_status: vec![429],
     };
 
-    let mut headers = EndpointHttpHeaders::new();
-    headers.insert("retry-after", "2");
-    let delay = policy.retry_delay_for_status(429, &headers, 1);
+    let delay = policy.retry_delay_for_status(429, Some("2"), 1);
     assert_eq!(delay, std::time::Duration::from_secs(2));
 }
 
@@ -126,7 +123,7 @@ fn retry_policy_falls_back_to_rate_limit_backoff_without_retry_after() {
         retry_on_status: vec![429],
     };
 
-    let delay = policy.retry_delay_for_status(429, &EndpointHttpHeaders::new(), 1);
+    let delay = policy.retry_delay_for_status(429, None, 1);
     assert_eq!(delay, std::time::Duration::from_millis(250));
 }
 
@@ -144,6 +141,6 @@ fn retry_policy_backoff_caps_to_max_delay() {
         retry_on_status: vec![500],
     };
 
-    let delay = policy.retry_delay_for_status(500, &EndpointHttpHeaders::new(), 4);
+    let delay = policy.retry_delay_for_status(500, None, 4);
     assert_eq!(delay, std::time::Duration::from_millis(500));
 }

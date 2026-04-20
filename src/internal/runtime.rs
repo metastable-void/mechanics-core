@@ -1,7 +1,7 @@
 use crate::internal::{
     error::MechanicsError,
     executor::{CustomModuleLoader, Queue},
-    http::{EndpointHttpClient, MechanicsConfig, PreparedHttpEndpoint},
+    http::{BoaMechanicsConfig, EndpointHttpClient, PreparedHttpEndpoint},
     job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
@@ -56,9 +56,9 @@ impl HostHooks for RuntimeHostHooks {
 
 #[derive(JsData, Finalize, Trace, Clone, Debug)]
 pub(crate) struct MechanicsState {
-    // SAFETY: `MechanicsConfig` is Rust-owned data and does not embed GC-traced Boa handles.
+    // SAFETY: `BoaMechanicsConfig` is Rust-owned data and does not embed GC-traced Boa handles.
     #[unsafe_ignore_trace]
-    pub(crate) config: Arc<MechanicsConfig>,
+    pub(crate) config: Arc<BoaMechanicsConfig>,
 
     // SAFETY: `Arc<dyn EndpointHttpClient>` is Rust-owned transport state with no references into
     // Boa's GC heap.
@@ -81,7 +81,7 @@ pub(crate) struct MechanicsState {
 
 impl MechanicsState {
     pub(crate) fn new(
-        config: Arc<MechanicsConfig>,
+        config: Arc<BoaMechanicsConfig>,
         endpoint_http_client: Arc<dyn EndpointHttpClient>,
         default_timeout_ms: Option<u64>,
         default_response_max_bytes: Option<usize>,
@@ -112,7 +112,7 @@ impl MechanicsState {
         &self,
         name: &str,
     ) -> Option<(&crate::internal::http::HttpEndpoint, &PreparedHttpEndpoint)> {
-        let endpoint = self.config.endpoints.get(name)?;
+        let endpoint = self.config.as_inner().endpoints().get(name)?;
         let prepared = self.prepared_endpoints.get(name)?;
         Some((endpoint, prepared))
     }
@@ -214,13 +214,14 @@ impl RuntimeInternal {
     pub(crate) fn run_source_inner(&mut self, job: MechanicsJob) -> JsResult<JsValue> {
         let (source, arg, config) = job.into_parts();
         self.hooks.clear();
-        let mut prepared_endpoints = HashMap::with_capacity(config.endpoints.len());
-        for (name, endpoint) in &config.endpoints {
+        let config_inner = Arc::unwrap_or_clone(config);
+        let mut prepared_endpoints = HashMap::with_capacity(config_inner.endpoints().len());
+        for (name, endpoint) in config_inner.endpoints() {
             let prepared = endpoint.prepare_runtime().map_err(JsError::from_rust)?;
             prepared_endpoints.insert(name.clone(), prepared);
         }
         let state = MechanicsState::new(
-            config,
+            Arc::new(config_inner.into()),
             Arc::clone(&self.endpoint_http_client),
             self.default_endpoint_timeout_ms,
             self.default_endpoint_response_max_bytes,
