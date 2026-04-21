@@ -17,6 +17,11 @@ this crate adheres to
   `#[unsafe_ignore_trace]`.
 - Preserved compatibility by re-exporting endpoint/config types at
   `mechanics_core::endpoint::*` and `mechanics_core::job::MechanicsConfig`.
+- **Behavior change:** schema validation now fails at config-construction
+  time instead of at job call time. Callers that previously constructed
+  intentionally-invalid `MechanicsConfig` or `HttpEndpoint` values and
+  relied on errors surfacing lazily will now see those errors at the
+  construction site. Intentional; matches the design.
 
 ## [0.2.2]
 
