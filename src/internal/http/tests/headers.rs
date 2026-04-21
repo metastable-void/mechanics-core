@@ -1,5 +1,5 @@
-use super::super::*;
 use super::super::execute::HttpEndpointCompatExt;
+use super::super::*;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 #[test]

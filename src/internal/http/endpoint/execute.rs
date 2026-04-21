@@ -17,7 +17,8 @@ const DEFAULT_USER_AGENT: &str = concat!(
 );
 
 pub(crate) trait HttpEndpointCompatExt {
-    fn build_url_for_options(&self, options: &EndpointCallOptions) -> std::io::Result<reqwest::Url>;
+    fn build_url_for_options(&self, options: &EndpointCallOptions)
+    -> std::io::Result<reqwest::Url>;
     fn build_headers_for_options(
         &self,
         default_content_type: Option<&str>,
@@ -26,7 +27,10 @@ pub(crate) trait HttpEndpointCompatExt {
 }
 
 impl HttpEndpointCompatExt for HttpEndpoint {
-    fn build_url_for_options(&self, options: &EndpointCallOptions) -> std::io::Result<reqwest::Url> {
+    fn build_url_for_options(
+        &self,
+        options: &EndpointCallOptions,
+    ) -> std::io::Result<reqwest::Url> {
         let url = HttpEndpoint::build_url(self, &options.url_params, &options.queries)?;
         reqwest::Url::parse(&url).map_err(into_io_error)
     }
@@ -113,7 +117,10 @@ pub(crate) async fn execute_endpoint(
         } else if !matches!(options.body, EndpointCallBody::Absent) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
-                format!("HTTP {} endpoint does not accept a request body", method.as_str()),
+                format!(
+                    "HTTP {} endpoint does not accept a request body",
+                    method.as_str()
+                ),
             ));
         } else {
             EndpointHttpRequestBody::Absent
@@ -141,7 +148,8 @@ pub(crate) async fn execute_endpoint(
                     attempt < max_attempts && retry_policy.should_retry_status(status_code);
                 if should_retry_status {
                     let retry_after = res.headers.values("retry-after").next();
-                    let delay = retry_policy.retry_delay_for_status(status_code, retry_after, attempt);
+                    let delay =
+                        retry_policy.retry_delay_for_status(status_code, retry_after, attempt);
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
                     }

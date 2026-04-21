@@ -1,5 +1,5 @@
-use super::super::*;
 use super::super::execute::HttpEndpointCompatExt;
+use super::super::*;
 
 #[test]
 fn optional_allow_empty_query_mode_emits_empty_values() {

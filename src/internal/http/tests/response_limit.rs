@@ -1,5 +1,5 @@
-use super::super::*;
 use super::super::execute::extend_body_with_limit;
+use super::super::*;
 
 #[test]
 fn extend_body_with_limit_accepts_exact_boundary() {

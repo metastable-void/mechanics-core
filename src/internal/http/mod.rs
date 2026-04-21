@@ -14,10 +14,10 @@ pub use transport::{
     EndpointHttpResponse, ReqwestEndpointHttpClient,
 };
 
+pub(crate) use endpoint::execute_endpoint;
 pub(crate) use options::{
     EndpointCallBody, EndpointCallOptions, EndpointResponse, EndpointResponseBody,
 };
-pub(crate) use endpoint::execute_endpoint;
 pub(crate) use transport::into_io_error;
 pub(crate) use wrappers::BoaMechanicsConfig;
 

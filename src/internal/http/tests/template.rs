@@ -1,5 +1,5 @@
-use super::super::*;
 use super::super::execute::HttpEndpointCompatExt;
+use super::super::*;
 
 #[test]
 fn duplicate_template_slot_is_rejected() {
