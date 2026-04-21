@@ -2,7 +2,7 @@
 name = "mechanics-core"
 version = "0.2.3"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 authors = ["metastable-void"]
 description = "mechanics automation framework (core)"
