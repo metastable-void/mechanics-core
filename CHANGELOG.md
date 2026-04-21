@@ -9,14 +9,26 @@ this crate adheres to
 
 ## [Unreleased]
 
-## [0.2.3]
+## [0.3.0]
+
+Originally prepared as `0.2.3`. Re-cut as `0.3.0` after
+`cargo-semver-checks` correctly flagged the type-identity change
+(schema types now defined in `mechanics-config`, re-exported here)
+as a breaking change under cargo's pre-1.0 semver rules. Call-site
+usage is preserved by the re-exports, but the defining crate
+moved, so the bump opts downstreams in explicitly rather than
+arriving under a caret-range silent upgrade.
 
 - Extracted schema/config types into `mechanics-config` and now depend on
   `mechanics-config = "0.1.0"`.
 - Added Boa GC wrapper newtypes over extracted schema types via
   `#[unsafe_ignore_trace]`.
-- Preserved compatibility by re-exporting endpoint/config types at
-  `mechanics_core::endpoint::*` and `mechanics_core::job::MechanicsConfig`.
+- Preserved path-level compatibility by re-exporting endpoint/config types
+  at `mechanics_core::endpoint::*` and `mechanics_core::job::MechanicsConfig`.
+  Call-site code using those import paths compiles unchanged; only the
+  type-identity-sensitive minority (patterns touching `std::any::TypeId`
+  of these types, or depending on the defining-crate identity for some
+  other reason) sees a difference.
 - **Behavior change:** schema validation now fails at config-construction
   time instead of at job call time. Callers that previously constructed
   intentionally-invalid `MechanicsConfig` or `HttpEndpoint` values and
