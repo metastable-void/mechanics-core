@@ -9,6 +9,10 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.3.1]
+
+- Added doc comments.
+
 ## [0.3.0]
 
 Originally prepared as `0.2.3`. Re-cut as `0.3.0` after
