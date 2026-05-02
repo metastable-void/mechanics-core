@@ -49,6 +49,131 @@ fn run_maps_reply_timeout_to_run_timeout() {
 }
 
 #[test]
+fn run_uses_per_job_timeout_when_set() {
+    let (tx, rx) = bounded(8);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = test_shared_with_channels(tx, rx, exit_tx, exit_rx, 1, 8);
+    let pool = MechanicsPool {
+        shared,
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_secs(30),
+        supervisor: None,
+        supervisor_shutdown_tx: None,
+    };
+
+    {
+        let mut workers = pool.shared.workers_write();
+        workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
+    }
+
+    let job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    )
+    .with_run_timeout(Duration::from_millis(50))
+    .expect("set per-job run timeout");
+
+    let started = Instant::now();
+    let err = pool
+        .run(job)
+        .expect_err("per-job run_timeout should fire while waiting for reply");
+    assert!(matches!(err, MechanicsError::RunTimeout(_)));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn run_uses_pool_default_when_job_override_absent() {
+    let pool = MechanicsPool {
+        shared: {
+            let (tx, rx) = bounded(8);
+            let (exit_tx, exit_rx) = bounded(8);
+            test_shared_with_channels(tx, rx, exit_tx, exit_rx, 1, 8)
+        },
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_millis(5),
+        supervisor: None,
+        supervisor_shutdown_tx: None,
+    };
+
+    {
+        let mut workers = pool.shared.workers_write();
+        workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
+    }
+
+    let job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run(job)
+        .expect_err("pool run_timeout should fire when job has no override");
+    assert!(matches!(err, MechanicsError::RunTimeout(_)));
+}
+
+#[test]
+fn run_per_job_timeout_can_exceed_pool_default() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        queue_capacity: 8,
+        run_timeout: Duration::from_millis(5),
+        execution_limits: MechanicsExecutionLimits {
+            max_execution_time: Duration::from_secs(1),
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    )
+    .with_run_timeout(Duration::from_secs(1))
+    .expect("set per-job run timeout");
+
+    let value = pool
+        .run(job)
+        .expect("per-job timeout should exceed the short pool default");
+    assert_eq!(value, json!(1));
+}
+
+#[test]
+fn run_nonblocking_enqueue_uses_per_job_timeout_when_set() {
+    let (tx, rx) = bounded(8);
+    let (exit_tx, exit_rx) = bounded(8);
+    let shared = test_shared_with_channels(tx, rx, exit_tx, exit_rx, 1, 8);
+    let pool = MechanicsPool {
+        shared,
+        enqueue_timeout: Duration::from_millis(10),
+        run_timeout: Duration::from_secs(30),
+        supervisor: None,
+        supervisor_shutdown_tx: None,
+    };
+
+    {
+        let mut workers = pool.shared.workers_write();
+        workers.insert(0, WorkerHandle::from_join_for_test(thread::spawn(|| {})));
+    }
+
+    let job = make_job(
+        r#"export default function main() { return 1; }"#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    )
+    .with_run_timeout(Duration::from_millis(50))
+    .expect("set per-job run timeout");
+    let started = Instant::now();
+    let err = pool
+        .run_nonblocking_enqueue(job)
+        .expect_err("per-job run_timeout should fire while waiting for reply");
+    assert!(matches!(err, MechanicsError::RunTimeout(_)));
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
 fn run_timeout_can_expire_while_waiting_to_enqueue() {
     let (tx, rx) = bounded(1);
     let (exit_tx, exit_rx) = bounded(8);

@@ -9,6 +9,10 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.3.2]
+
+Added an optional `MechanicsJob::run_timeout` override for the Rust-side pool wait deadline, including a `with_run_timeout` builder and accessor. The serde field is optional with a default of `None`, so existing serialized jobs without `run_timeout` remain valid, and the public `MechanicsJob::new` signature is unchanged.
+
 ## [0.3.1]
 
 - Added doc comments.

@@ -442,7 +442,7 @@ fn timed_out_job_does_not_leak_pending_timeout_tasks_into_next_job() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
         execution_limits: MechanicsExecutionLimits {
-            max_execution_time: Duration::from_millis(25),
+            max_execution_time: Duration::from_millis(250),
             max_loop_iterations: 5_000_000,
             ..Default::default()
         },

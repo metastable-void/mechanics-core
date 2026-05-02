@@ -215,7 +215,8 @@ impl MechanicsPool {
             ));
         }
 
-        let deadline = Self::deadline_from_timeout(self.run_timeout)?;
+        let run_timeout = job.run_timeout().unwrap_or(self.run_timeout);
+        let deadline = Self::deadline_from_timeout(run_timeout)?;
         let (reply_tx, reply_rx) = bounded(1);
         let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob::new(job, reply_tx, Arc::clone(&canceled)));
@@ -290,7 +291,8 @@ impl MechanicsPool {
             ));
         }
 
-        let deadline = Self::deadline_from_timeout(self.run_timeout)?;
+        let run_timeout = job.run_timeout().unwrap_or(self.run_timeout);
+        let deadline = Self::deadline_from_timeout(run_timeout)?;
         let (reply_tx, reply_rx) = bounded(1);
         let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob::new(job, reply_tx, Arc::clone(&canceled)));

@@ -16,6 +16,8 @@ pub struct MechanicsJob {
     pub(crate) arg: Arc<Value>,
     /// Runtime configuration used for resolving `mechanics:endpoint` calls.
     pub(crate) config: Arc<MechanicsConfig>,
+    /// Optional pool wait timeout for this job.
+    pub(crate) run_timeout: Option<Duration>,
 }
 
 impl MechanicsJob {
@@ -40,7 +42,17 @@ impl MechanicsJob {
             module_source: Arc::<str>::from(module_source),
             arg: Arc::new(arg),
             config: Arc::new(config),
+            run_timeout: None,
         })
+    }
+
+    /// Overrides the pool wait timeout for this job.
+    pub fn with_run_timeout(mut self, timeout: Duration) -> Result<Self, MechanicsError> {
+        if timeout.is_zero() {
+            return Err(MechanicsError::runtime_pool("job run_timeout must be > 0"));
+        }
+        self.run_timeout = Some(timeout);
+        Ok(self)
     }
 
     /// Returns the ECMAScript module source.
@@ -58,6 +70,11 @@ impl MechanicsJob {
         self.config.as_ref()
     }
 
+    /// Returns the optional pool wait timeout override for this job.
+    pub fn run_timeout(&self) -> Option<Duration> {
+        self.run_timeout
+    }
+
     pub(crate) fn into_parts(self) -> (Arc<str>, Arc<Value>, Arc<MechanicsConfig>) {
         (self.module_source, self.arg, self.config)
     }
@@ -68,10 +85,14 @@ impl Serialize for MechanicsJob {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("MechanicsJob", 3)?;
+        let len = 3 + usize::from(self.run_timeout.is_some());
+        let mut state = serializer.serialize_struct("MechanicsJob", len)?;
         state.serialize_field("module_source", self.module_source.as_ref())?;
         state.serialize_field("arg", self.arg.as_ref())?;
         state.serialize_field("config", self.config.as_ref())?;
+        if let Some(run_timeout) = &self.run_timeout {
+            state.serialize_field("run_timeout", run_timeout)?;
+        }
         state.end()
     }
 }
@@ -87,10 +108,17 @@ impl<'de> Deserialize<'de> for MechanicsJob {
             module_source: String,
             arg: Value,
             config: MechanicsConfig,
+            #[serde(default)]
+            run_timeout: Option<Duration>,
         }
 
         let raw = RawMechanicsJob::deserialize(deserializer)?;
-        MechanicsJob::new(raw.module_source, raw.arg, raw.config).map_err(serde::de::Error::custom)
+        MechanicsJob::new(raw.module_source, raw.arg, raw.config)
+            .and_then(|job| match raw.run_timeout {
+                Some(run_timeout) => job.with_run_timeout(run_timeout),
+                None => Ok(job),
+            })
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -188,13 +216,14 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn mechanics_job_serde_roundtrip() {
+    fn mechanics_job_serde_roundtrip_with_run_timeout() {
         let config = MechanicsConfig::new(HashMap::new()).expect("create config");
         let job = MechanicsJob::new(
             "export default function main(arg) { return arg; }",
             json!({"hello": "world"}),
             config,
         )
+        .and_then(|job| job.with_run_timeout(Duration::from_secs(60)))
         .expect("build job");
 
         let encoded = serde_json::to_value(&job).expect("serialize job");
@@ -203,6 +232,36 @@ mod tests {
         assert_eq!(decoded.module_source(), job.module_source());
         assert_eq!(decoded.arg(), job.arg());
         assert_eq!(decoded.config().endpoints().len(), 0);
+        assert_eq!(decoded.run_timeout(), Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn mechanics_job_deserialize_no_run_timeout_field() {
+        let decoded = serde_json::from_value::<MechanicsJob>(json!({
+            "module_source": "export default function main() { return null; }",
+            "arg": null,
+            "config": { "endpoints": {} }
+        }))
+        .expect("legacy payload without run_timeout should deserialize");
+
+        assert_eq!(decoded.run_timeout(), None);
+    }
+
+    #[test]
+    fn mechanics_job_with_run_timeout_zero_rejected() {
+        let config = MechanicsConfig::new(HashMap::new()).expect("create config");
+        let job = MechanicsJob::new(
+            "export default function main(arg) { return arg; }",
+            json!({"hello": "world"}),
+            config,
+        )
+        .expect("build job");
+
+        let err = job
+            .with_run_timeout(Duration::ZERO)
+            .expect_err("zero job run_timeout should be rejected");
+        assert!(matches!(err, MechanicsError::RuntimePool(_)));
+        assert_eq!(err.msg(), "job run_timeout must be > 0");
     }
 
     #[test]
