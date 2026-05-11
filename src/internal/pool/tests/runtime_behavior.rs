@@ -164,7 +164,20 @@ fn pending_default_promise_is_reported_as_execution_error() {
 }
 
 #[test]
-fn unhandled_async_error_is_reported_as_execution_error() {
+fn unhandled_async_error_does_not_override_fulfilled_main() {
+    // mechanics-core 0.4.0 changed semantics: when `main` returns a fulfilled
+    // value, we trust the script's own outcome rather than overriding it with
+    // an "Unhandled promise rejection" engine error. This prevents a Boa
+    // tracker false-positive (`NativeFunction::from_async_fn` rejection
+    // tracking does not reliably balance with await-chain handler attachment)
+    // from breaking workflows whose `await ... catch` correctly handled the
+    // failure.
+    //
+    // The trade-off: a script that legitimately leaves a promise rejection
+    // unhandled (canonical example below) no longer fails the step. It still
+    // produces a (silently) misbehaving result, but a misbehaving result is
+    // strictly preferable to a hard step failure for the much more common
+    // case of a correctly-caught endpoint error tripping the same tracker.
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
         ..Default::default()
@@ -184,15 +197,10 @@ fn unhandled_async_error_is_reported_as_execution_error() {
         MechanicsConfig::new(HashMap::new()).expect("create config"),
         Value::Null,
     );
-    let err = pool
+    let result = pool
         .run(job)
-        .expect_err("unhandled async error should fail current job");
-    match err {
-        MechanicsError::Execution(msg) => {
-            assert!(msg.contains("boom") || msg.contains("Error") || msg.contains("Unhandled"));
-        }
-        other => panic!("unexpected error kind: {other}"),
-    }
+        .expect("fulfilled main succeeds despite an unhandled inner rejection");
+    assert_eq!(result, Value::from(1));
 }
 
 #[test]

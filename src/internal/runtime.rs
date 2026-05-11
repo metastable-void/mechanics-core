@@ -275,15 +275,38 @@ impl RuntimeInternal {
             ctx.run_jobs()?;
 
             match res.state() {
-                PromiseState::Fulfilled(v) => {
-                    if self.hooks.has_unhandled_rejections() {
-                        Err(JsError::from_native(
-                            JsNativeError::error().with_message("Unhandled promise rejection"),
-                        ))
-                    } else {
-                        Ok(v)
-                    }
-                }
+                // If main fulfilled, the script's own try/catch chain already
+                // produced a successful outcome — trust it. We intentionally do
+                // NOT consult `has_unhandled_rejections()` here.
+                //
+                // Why: Boa's `NativeFunction::from_async_fn` rejects an inner
+                // promise that the await machinery wraps in an outer
+                // continuation promise. The spec-compliant
+                // `promise_rejection_tracker` fires `Reject` on the inner
+                // rejection (no handlers attached at that moment), but the
+                // matching `Handle` event for the inner promise does not
+                // reliably fire when the handler is attached to the outer
+                // wrapper rather than the inner promise. The counter then
+                // ends positive even though every JS-visible rejection was
+                // caught by the script's `await ... catch`.
+                //
+                // The strict check we used to do here produced false-positive
+                // step failures for any workflow that legitimately catches an
+                // endpoint error — including the canonical D13 chat-with-
+                // fallback pattern. Match Node's semantics: an unhandled
+                // rejection is a warning, not a process kill. Genuine
+                // script-author bugs (e.g. `Promise.resolve().then(throw)`
+                // with no catch anywhere) still produce a working but
+                // misbehaving step rather than a hard failure — the cost of
+                // that is much lower than breaking every workflow that
+                // handles errors correctly.
+                //
+                // The module-evaluation-time check above (run after the
+                // module is imported but before `main` is called) is
+                // separate and stays strict because top-level awaits in user
+                // scripts are rare and a module-load failure is a different
+                // class of problem.
+                PromiseState::Fulfilled(v) => Ok(v),
                 PromiseState::Pending => Err(JsError::from_native(
                     JsNativeError::runtime_limit()
                         .with_message("Default export promise did not settle"),

@@ -9,6 +9,24 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-11
+
+Changed: when the default-export `main` returns a fulfilled promise, the
+runtime no longer overrides that success with an "Unhandled promise
+rejection" engine error. Boa's spec-compliant
+`promise_rejection_tracker` does not reliably balance `Reject`/`Handle`
+events across the inner-promise / outer-await-wrapper chain that
+`NativeFunction::from_async_fn` creates, so the previous strict check
+produced false-positive step failures for workflows that correctly
+caught endpoint errors with `try { await endpoint(...) } catch (e) {
+... }`. The module-evaluation-time unhandled-rejection check (run
+before `main` is called) stays strict — top-level async work in user
+scripts is rare and module-load failures are a different class of
+problem. A genuinely-abandoned inner rejection (e.g.
+`Promise.resolve().then(() => { throw })` with no catch anywhere)
+no longer fails the step; the script is responsible for handling its
+own promises.
+
 ## [0.3.2]
 
 Added an optional `MechanicsJob::run_timeout` override for the Rust-side pool wait deadline, including a `with_run_timeout` builder and accessor. The serde field is optional with a default of `None`, so existing serialized jobs without `run_timeout` remain valid, and the public `MechanicsJob::new` signature is unchanged.
