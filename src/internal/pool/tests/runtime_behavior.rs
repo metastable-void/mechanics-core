@@ -3,10 +3,11 @@ use crate::endpoint::http_client::{
     EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
     EndpointHttpResponse,
 };
+use crate::internal::runtime::RuntimeInternal;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 
 #[test]
 fn run_simple_module_returns_value() {
@@ -231,6 +232,360 @@ fn oversized_execution_timeout_is_reported_as_execution_error() {
     match err {
         MechanicsError::Execution(msg) => {
             assert!(msg.contains("max_execution_time") || msg.contains("too large"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[derive(Debug)]
+struct ImmediateEndpointHttpClient {
+    call_count: Arc<AtomicUsize>,
+}
+
+impl EndpointHttpClient for ImmediateEndpointHttpClient {
+    fn execute(
+        &self,
+        _request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        let call_count = Arc::clone(&self.call_count);
+        Box::pin(async move {
+            call_count.fetch_add(1, Ordering::Relaxed);
+            Ok(EndpointHttpResponse {
+                status: 200,
+                headers: EndpointHttpHeaders::new(),
+                content_length: Some(11),
+                body: br#"{"ok":true}"#.to_vec(),
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
+struct BlockingEndpointHttpClient {
+    call_count: Arc<AtomicUsize>,
+    gate: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl BlockingEndpointHttpClient {
+    fn release(&self) {
+        let (lock, condvar) = &*self.gate;
+        let mut released = lock.lock().expect("lock endpoint gate");
+        *released = true;
+        condvar.notify_all();
+    }
+}
+
+impl EndpointHttpClient for BlockingEndpointHttpClient {
+    fn execute(
+        &self,
+        _request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        let call_count = Arc::clone(&self.call_count);
+        let gate = Arc::clone(&self.gate);
+        Box::pin(async move {
+            call_count.fetch_add(1, Ordering::Relaxed);
+            let (lock, condvar) = &*gate;
+            let mut released = lock.lock().expect("lock endpoint gate");
+            while !*released {
+                released = condvar.wait(released).expect("wait endpoint gate");
+            }
+            Ok(EndpointHttpResponse {
+                status: 200,
+                headers: EndpointHttpHeaders::new(),
+                content_length: Some(11),
+                body: br#"{"ok":true}"#.to_vec(),
+            })
+        })
+    }
+}
+
+fn mock_endpoint_config() -> MechanicsConfig {
+    endpoint_config(
+        "mock",
+        HttpEndpoint::new(HttpMethod::Get, "https://mock.local/ping", HashMap::new()),
+    )
+}
+
+fn wait_for_call_count(counter: &AtomicUsize, expected: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if counter.load(Ordering::Relaxed) >= expected {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(counter.load(Ordering::Relaxed), expected);
+}
+
+fn assert_no_tail_abort_for(job_id: &str) {
+    assert!(
+        !RuntimeInternal::tail_poll_abort_records_for_test()
+            .iter()
+            .any(|record| record.job_id == job_id),
+        "unexpected tail-poll abort record for {job_id}"
+    );
+}
+
+#[test]
+fn d17_sync_return_no_pending_work_preserves_value() {
+    let job_id = "d17-sync-return";
+    RuntimeInternal::clear_tail_poll_abort_records_for_test();
+    let mut runtime =
+        RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
+            call_count: Arc::new(AtomicUsize::new(0)),
+        }))
+        .expect("create runtime");
+    let job = make_job(
+        r#"
+            export default function main(_arg) {
+                return { ok: 1 };
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+
+    let started = Instant::now();
+    let value = runtime.run_source(job).expect("run sync return");
+
+    assert_eq!(value, json!({"ok": 1}));
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "sync job should return promptly"
+    );
+    assert_no_tail_abort_for(job_id);
+}
+
+#[test]
+fn d17_async_return_all_awaited_preserves_value() {
+    let job_id = "d17-awaited-endpoint";
+    RuntimeInternal::clear_tail_poll_abort_records_for_test();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut runtime =
+        RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
+            call_count: Arc::clone(&calls),
+        }))
+        .expect("create runtime");
+    let job = make_job(
+        r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                const res = await endpoint("mock", {});
+                return res.body;
+            }
+        "#,
+        mock_endpoint_config(),
+        Value::Null,
+    );
+
+    let value = runtime.run_source(job).expect("run awaited endpoint");
+
+    assert_eq!(value, json!({"ok": true}));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_no_tail_abort_for(job_id);
+}
+
+#[test]
+fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
+    let job_id = "d17-fire-and-forget-endpoint";
+    RuntimeInternal::clear_tail_poll_abort_records_for_test();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let client = Arc::new(BlockingEndpointHttpClient {
+        call_count: Arc::clone(&calls),
+        gate: Arc::new((Mutex::new(false), Condvar::new())),
+    });
+    let release_client = Arc::clone(&client);
+    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+
+    let handle = thread::spawn(move || {
+        let mut runtime =
+            RuntimeInternal::new_with_endpoint_http_client(client).expect("create runtime");
+        let job = make_job(
+            r#"
+                import endpoint from "mechanics:endpoint";
+                export default function main(_arg) {
+                    endpoint("mock", {});
+                    return { ok: 2 };
+                }
+            "#,
+            mock_endpoint_config(),
+            Value::Null,
+        );
+        runtime
+            .run_source_with_early_reply(job, job_id, |result| {
+                reply_tx.send(result).expect("send early reply");
+            })
+            .expect("tail poll should finish after release");
+    });
+
+    let response = reply_rx
+        .recv_timeout(Duration::from_millis(200))
+        .expect("early reply should arrive before endpoint future is released")
+        .expect("main response should succeed");
+    assert_eq!(response, json!({"ok": 2}));
+    wait_for_call_count(&calls, 1);
+    release_client.release();
+    handle.join().expect("runtime thread should join");
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_no_tail_abort_for(job_id);
+}
+
+#[test]
+fn d17_set_timeout_without_await_runs_during_tail_poll() {
+    let job_id = "d17-timeout-tail";
+    RuntimeInternal::clear_tail_poll_abort_records_for_test();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut runtime =
+        RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
+            call_count: Arc::clone(&calls),
+        }))
+        .expect("create runtime");
+    let job = make_job(
+        r#"
+            import endpoint from "mechanics:endpoint";
+            export default function main(_arg) {
+                setTimeout(() => { endpoint("mock", {}); }, 50);
+                return { ok: 4 };
+            }
+        "#,
+        mock_endpoint_config(),
+        Value::Null,
+    );
+
+    let value = runtime.run_source(job).expect("run timer tail job");
+
+    assert_eq!(value, json!({"ok": 4}));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_no_tail_abort_for(job_id);
+}
+
+#[test]
+fn d17_deadline_mid_tail_poll_replies_then_warns_once() {
+    let job_id = "d17-deadline-tail";
+    RuntimeInternal::clear_tail_poll_abort_records_for_test();
+    let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+    let handle = thread::spawn(move || {
+        let mut runtime =
+            RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
+                call_count: Arc::new(AtomicUsize::new(0)),
+            }))
+            .expect("create runtime");
+        runtime.set_execution_limits(MechanicsExecutionLimits {
+            max_execution_time: Duration::from_millis(200),
+            ..Default::default()
+        });
+        let job = make_job(
+            r#"
+                export default function main(_arg) {
+                    setTimeout(() => { globalThis.__late = true; }, 10000);
+                    return { ok: 5 };
+                }
+            "#,
+            MechanicsConfig::new(HashMap::new()).expect("create config"),
+            Value::Null,
+        );
+        let started = Instant::now();
+        runtime
+            .run_source_with_early_reply(job, job_id, |result| {
+                reply_tx
+                    .send((started.elapsed(), result))
+                    .expect("send early reply");
+            })
+            .expect("tail deadline abort is handled after early reply");
+        started.elapsed()
+    });
+
+    let (reply_elapsed, response) = reply_rx
+        .recv_timeout(Duration::from_millis(100))
+        .expect("main response should arrive before tail deadline");
+    assert!(
+        reply_elapsed < Duration::from_millis(100),
+        "main response should be prompt"
+    );
+    assert_eq!(
+        response.expect("main response should succeed"),
+        json!({"ok": 5})
+    );
+    let total_elapsed = handle.join().expect("runtime thread should join");
+    assert!(total_elapsed >= Duration::from_millis(180));
+    let records = RuntimeInternal::tail_poll_abort_records_for_test();
+    let record = records
+        .iter()
+        .find(|record| record.job_id == job_id)
+        .expect("tail-poll abort should be recorded");
+    assert_eq!(record.snapshot.in_flight_async_jobs, 0);
+    assert_eq!(record.snapshot.timeout_jobs, 1);
+}
+
+#[test]
+fn d17_unhandled_rejection_during_tail_poll_does_not_fail_response() {
+    let job_id = "d17-tail-rejection";
+    RuntimeInternal::clear_tail_poll_abort_records_for_test();
+    let mut runtime =
+        RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
+            call_count: Arc::new(AtomicUsize::new(0)),
+        }))
+        .expect("create runtime");
+    let job = make_job(
+        r#"
+            export default function main(_arg) {
+                Promise.reject(new Error("boom"));
+                return { ok: 3 };
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+
+    let mut response = None;
+    runtime
+        .run_source_with_early_reply(job, job_id, |result| {
+            response = Some(result);
+        })
+        .expect("tail rejection should not fail run_source after main reply");
+
+    assert_eq!(
+        response
+            .expect("main response should be captured")
+            .expect("main response should succeed"),
+        json!({"ok": 3})
+    );
+    assert!(
+        RuntimeInternal::recorded_unhandled_rejection_count_for_test(job_id)
+            .expect("unhandled rejection count should be recorded")
+            > 0
+    );
+    assert_no_tail_abort_for(job_id);
+}
+
+#[test]
+fn d17_main_never_settles_preserves_default_export_timeout_error() {
+    let mut runtime =
+        RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
+            call_count: Arc::new(AtomicUsize::new(0)),
+        }))
+        .expect("create runtime");
+    runtime.set_execution_limits(MechanicsExecutionLimits {
+        max_execution_time: Duration::from_millis(100),
+        ..Default::default()
+    });
+    let job = make_job(
+        r#"
+            export default function main(_arg) {
+                return new Promise(() => {});
+            }
+        "#,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+
+    let err = runtime
+        .run_source(job)
+        .expect_err("pending main promise should fail");
+
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("Default export promise did not settle"));
         }
         other => panic!("unexpected error kind: {other}"),
     }

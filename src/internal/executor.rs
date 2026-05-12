@@ -14,6 +14,20 @@ use std::{
 };
 use tokio::task;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QueueSnapshot {
+    pub(crate) in_flight_async_jobs: usize,
+    pub(crate) promise_jobs: usize,
+    pub(crate) timeout_jobs: usize,
+    pub(crate) generic_jobs: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunJobsExit {
+    Complete,
+    DeadlineExceeded(QueueSnapshot),
+}
+
 /// Job queues backing Boa's executor integration.
 pub(crate) struct Queue {
     async_jobs: RefCell<VecDeque<NativeAsyncJob>>,
@@ -62,14 +76,42 @@ impl Queue {
         self.generic_jobs.borrow_mut().clear();
     }
 
-    fn check_deadline(&self, context: &Context) -> JsResult<()> {
+    fn deadline_exceeded(&self, context: &Context) -> bool {
         let Some(deadline) = *self.deadline.borrow() else {
-            return Ok(());
+            return false;
         };
-        if context.clock().now() >= deadline {
-            return Err(Self::timeout_error());
+        context.clock().now() >= deadline
+    }
+
+    fn snapshot(&self, in_flight_async_jobs: usize) -> QueueSnapshot {
+        QueueSnapshot {
+            in_flight_async_jobs,
+            promise_jobs: self.promise_jobs.borrow().len(),
+            timeout_jobs: self.timeout_jobs.borrow().values().map(Vec::len).sum(),
+            generic_jobs: self.generic_jobs.borrow().len(),
         }
-        Ok(())
+    }
+
+    pub(crate) fn run_jobs_until<F>(
+        self: Rc<Self>,
+        context: &mut Context,
+        should_stop: F,
+    ) -> JsResult<RunJobsExit>
+    where
+        F: FnMut() -> bool,
+    {
+        let this = Rc::clone(&self);
+        self.tokio_local.block_on(
+            &self.tokio_rt,
+            this.run_jobs_async_until(&RefCell::new(context), should_stop),
+        )
+    }
+
+    pub(crate) fn run_jobs_to_quiescence(
+        self: Rc<Self>,
+        context: &mut Context,
+    ) -> JsResult<RunJobsExit> {
+        self.run_jobs_until(context, || false)
     }
 
     fn next_timeout_at(&self) -> Option<JsInstant> {
@@ -162,60 +204,34 @@ impl Queue {
         context.clear_kept_objects();
         Ok(())
     }
-}
 
-impl JobExecutor for Queue {
-    /// Routes jobs to their corresponding internal queues.
-    fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
-        match job {
-            Job::PromiseJob(job) => self.promise_jobs.borrow_mut().push_back(job),
-            Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
-            Job::TimeoutJob(t) => {
-                let now = context.clock().now();
-                let at = Self::instant_checked_add(now, t.timeout().into()).unwrap_or_else(|| {
-                    Self::js_instant_from_millis(u64::MAX).unwrap_or(JsInstant::new(u64::MAX, 0))
-                });
-                self.timeout_jobs
-                    .borrow_mut()
-                    .entry(at)
-                    .or_default()
-                    .push(t);
-            }
-            Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
-            other => {
-                let realm = context.realm().clone();
-                let message = format!("unsupported job type: {other:?}");
-                let err = GenericJob::new(
-                    move |_| {
-                        Err(JsError::from_native(
-                            JsNativeError::typ().with_message(message.clone()),
-                        ))
-                    },
-                    realm,
-                );
-                self.generic_jobs.borrow_mut().push_back(err);
-            }
-        }
-    }
-
-    /// Bridges Boa's synchronous API to the async scheduler by running a local Tokio runtime.
-    fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
-        let this = Rc::clone(&self);
-        self.tokio_local
-            .block_on(&self.tokio_rt, this.run_jobs_async(&RefCell::new(context)))
-    }
-
-    /// Polls async jobs and drains task queues until no jobs remain.
-    async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
+    async fn run_jobs_async_until<F>(
+        self: Rc<Self>,
+        context: &RefCell<&mut Context>,
+        mut should_stop: F,
+    ) -> JsResult<RunJobsExit>
+    where
+        F: FnMut() -> bool,
+    {
         let mut group = FutureGroup::new();
+        let mut in_flight_async_jobs = 0_usize;
         loop {
+            if should_stop() {
+                return Ok(RunJobsExit::Complete);
+            }
+
             {
                 let ctx_ref = context.borrow();
-                self.check_deadline(&ctx_ref)?;
+                if self.deadline_exceeded(&ctx_ref) {
+                    return Ok(RunJobsExit::DeadlineExceeded(
+                        self.snapshot(in_flight_async_jobs),
+                    ));
+                }
             }
 
             for job in std::mem::take(&mut *self.async_jobs.borrow_mut()) {
                 group.insert(job.call(context));
+                in_flight_async_jobs = in_flight_async_jobs.saturating_add(1);
             }
 
             if group.is_empty()
@@ -223,7 +239,7 @@ impl JobExecutor for Queue {
                 && self.timeout_jobs.borrow().is_empty()
                 && self.generic_jobs.borrow().is_empty()
             {
-                return Ok(());
+                return Ok(RunJobsExit::Complete);
             }
 
             if group.is_empty() {
@@ -286,18 +302,76 @@ impl JobExecutor for Queue {
                     group.next().await
                 };
 
-                if let Some(Err(err)) = next_result {
-                    return Err(err);
+                match next_result {
+                    Some(Ok(_)) => {
+                        in_flight_async_jobs = in_flight_async_jobs.saturating_sub(1);
+                    }
+                    Some(Err(err)) => return Err(err),
+                    None => {}
                 }
             }
 
             {
                 let ctx_ref = context.borrow();
-                self.check_deadline(&ctx_ref)?;
+                if self.deadline_exceeded(&ctx_ref) {
+                    return Ok(RunJobsExit::DeadlineExceeded(
+                        self.snapshot(in_flight_async_jobs),
+                    ));
+                }
             }
 
             self.drain_jobs(&mut context.borrow_mut())?;
             task::yield_now().await
+        }
+    }
+}
+
+impl JobExecutor for Queue {
+    /// Routes jobs to their corresponding internal queues.
+    fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
+        match job {
+            Job::PromiseJob(job) => self.promise_jobs.borrow_mut().push_back(job),
+            Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
+            Job::TimeoutJob(t) => {
+                let now = context.clock().now();
+                let at = Self::instant_checked_add(now, t.timeout().into()).unwrap_or_else(|| {
+                    Self::js_instant_from_millis(u64::MAX).unwrap_or(JsInstant::new(u64::MAX, 0))
+                });
+                self.timeout_jobs
+                    .borrow_mut()
+                    .entry(at)
+                    .or_default()
+                    .push(t);
+            }
+            Job::GenericJob(g) => self.generic_jobs.borrow_mut().push_back(g),
+            other => {
+                let realm = context.realm().clone();
+                let message = format!("unsupported job type: {other:?}");
+                let err = GenericJob::new(
+                    move |_| {
+                        Err(JsError::from_native(
+                            JsNativeError::typ().with_message(message.clone()),
+                        ))
+                    },
+                    realm,
+                );
+                self.generic_jobs.borrow_mut().push_back(err);
+            }
+        }
+    }
+
+    /// Bridges Boa's synchronous API to the async scheduler by running a local Tokio runtime.
+    fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
+        let this = Rc::clone(&self);
+        self.tokio_local
+            .block_on(&self.tokio_rt, this.run_jobs_async(&RefCell::new(context)))
+    }
+
+    /// Polls async jobs and drains task queues until no jobs remain.
+    async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
+        match self.run_jobs_async_until(context, || false).await? {
+            RunJobsExit::Complete => Ok(()),
+            RunJobsExit::DeadlineExceeded(_) => Err(Self::timeout_error()),
         }
     }
 }

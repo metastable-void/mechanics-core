@@ -205,6 +205,7 @@ impl MechanicsPoolShared {
                     runtime.set_execution_limits(execution_limits);
                     runtime.set_default_endpoint_timeout_ms(default_http_timeout_ms);
                     runtime.set_default_endpoint_response_max_bytes(default_http_response_max_bytes);
+                    let mut worker_job_sequence = 0_u64;
 
                     loop {
                         select! {
@@ -222,17 +223,39 @@ impl MechanicsPoolShared {
                                         }
                                         let reply = pool_job.reply_sender();
                                         let job = pool_job.into_job();
-                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                            runtime.run_source(job)
-                                        }));
-                                        match result {
-                                            Ok(result) => {
+                                        worker_job_sequence =
+                                            worker_job_sequence.saturating_add(1);
+                                        let job_id =
+                                            format!("worker-{worker_id}-job-{worker_job_sequence}");
+                                        let replied = Arc::new(AtomicBool::new(false));
+                                        let early_replied = Arc::clone(&replied);
+                                        let early_reply = {
+                                            let reply = reply.clone();
+                                            move |result| {
+                                                early_replied.store(true, Ordering::Release);
                                                 let _ = reply.send(result);
                                             }
+                                        };
+                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                            runtime.run_source_with_early_reply(
+                                                job,
+                                                &job_id,
+                                                early_reply,
+                                            )
+                                        }));
+                                        match result {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(err)) => {
+                                                if !replied.swap(true, Ordering::AcqRel) {
+                                                    let _ = reply.send(Err(err));
+                                                }
+                                            }
                                             Err(_) => {
-                                                let _ = reply.send(Err(MechanicsError::worker_panic(
-                                                    "worker panicked while running job",
-                                                )));
+                                                if !replied.swap(true, Ordering::AcqRel) {
+                                                    let _ = reply.send(Err(MechanicsError::worker_panic(
+                                                        "worker panicked while running job",
+                                                    )));
+                                                }
                                                 break;
                                             }
                                         }

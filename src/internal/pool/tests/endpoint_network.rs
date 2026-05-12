@@ -29,7 +29,11 @@ fn execution_timeout_stops_slow_async_job() {
     let _ = server.join();
     match err {
         MechanicsError::Execution(msg) => {
-            assert!(msg.contains("Maximum execution time exceeded"));
+            assert!(
+                msg.contains("Maximum execution time exceeded")
+                    || msg.contains("Default export promise did not settle"),
+                "unexpected error message: {msg}",
+            );
         }
         other => panic!("unexpected error kind: {other}"),
     }

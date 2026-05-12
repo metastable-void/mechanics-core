@@ -9,6 +9,22 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-12
+
+- Changed: the run-job response now returns when the script's
+  top-level settles. Unawaited promises, endpoint calls, and
+  `setTimeout` callbacks continue polling on the worker thread
+  until quiescence or `max_execution_time`. Previously the
+  response was held open until every queued promise / timer /
+  async job drained to quiescence, so the script's `return`
+  was not the response fence.
+- Added: `setTimeout(callback, delayMs)` is now exposed as a
+  global builtin inside the script realm.
+- Tail-poll abort path emits one `tracing::warn!` line per
+  job that hit the deadline before quiescence, naming the
+  job ID, in-flight async-job count, and queued
+  promise/timeout/generic counts at abort time.
+
 ## [0.4.0] - 2026-05-11
 
 Changed: when the default-export `main` returns a fulfilled promise, the

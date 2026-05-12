@@ -1,13 +1,15 @@
 use crate::internal::{
     error::MechanicsError,
-    executor::{CustomModuleLoader, Queue},
+    executor::{CustomModuleLoader, Queue, QueueSnapshot, RunJobsExit},
     http::{BoaMechanicsConfig, EndpointHttpClient, PreparedHttpEndpoint},
     job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
-    Context, JsData, JsError, JsNativeError, JsResult, JsValue, Module, Source, Trace,
+    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, Module, NativeFunction,
+    Source, Trace,
     builtins::promise::{OperationType, PromiseState},
     context::{ContextBuilder, HostHooks, time::JsInstant},
+    job::{Job, TimeoutJob},
     js_string,
     object::{JsObject, builtins::JsPromise},
 };
@@ -30,6 +32,11 @@ impl RuntimeHostHooks {
 
     fn has_unhandled_rejections(&self) -> bool {
         self.pending_unhandled_rejections.get() > 0
+    }
+
+    #[cfg(test)]
+    fn pending_unhandled_rejection_count(&self) -> usize {
+        self.pending_unhandled_rejections.get()
     }
 }
 
@@ -185,6 +192,9 @@ impl RuntimeInternal {
             })?;
 
         builtins::bundle_builtin_modules(&loader, &mut context);
+        Self::install_timer_builtins(&mut context).map_err(|e| {
+            MechanicsError::runtime_pool(format!("failed to initialize timer builtins: {e}"))
+        })?;
 
         Ok(Self {
             ctx: context,
@@ -210,14 +220,86 @@ impl RuntimeInternal {
         self.default_endpoint_response_max_bytes = max_bytes;
     }
 
-    /// Parses and evaluates a module, invokes its default export, and returns the JS result.
-    pub(crate) fn run_source_inner(&mut self, job: MechanicsJob) -> JsResult<JsValue> {
+    fn js_value_to_json(context: &mut Context, data: JsValue) -> Result<Value, MechanicsError> {
+        data.to_json(context)
+            .map(|d| d.unwrap_or(Value::Null))
+            .map_err(|e| MechanicsError::execution(e.to_string()))
+    }
+
+    fn js_error_to_execution(error: JsError) -> MechanicsError {
+        MechanicsError::execution(error.to_string())
+    }
+
+    fn set_timeout(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
+        let callback = args
+            .get_or_undefined(0)
+            .as_callable()
+            .ok_or(JsError::from_native(
+                JsNativeError::typ().with_message("setTimeout callback is not callable"),
+            ))?;
+        let delay_ms = u64::from(args.get_or_undefined(1).to_u32(context)?);
+        let timeout = TimeoutJob::from_duration(
+            move |context| callback.call(&JsValue::undefined(), &[], context),
+            std::time::Duration::from_millis(delay_ms),
+        );
+        context.enqueue_job(Job::TimeoutJob(timeout));
+        Ok(JsValue::undefined())
+    }
+
+    fn install_timer_builtins(context: &mut Context) -> JsResult<()> {
+        context.register_global_builtin_callable(
+            js_string!("setTimeout"),
+            2,
+            NativeFunction::from_fn_ptr(Self::set_timeout),
+        )
+    }
+
+    fn main_pending_error() -> JsError {
+        JsError::from_native(
+            JsNativeError::runtime_limit().with_message("Default export promise did not settle"),
+        )
+    }
+
+    fn log_tail_poll_aborted(job_id: &str, snapshot: QueueSnapshot) {
+        let queued = snapshot
+            .promise_jobs
+            .saturating_add(snapshot.timeout_jobs)
+            .saturating_add(snapshot.generic_jobs);
+        tracing::warn!(
+            job_id = job_id,
+            in_flight = snapshot.in_flight_async_jobs,
+            queued = queued,
+            queued_promise = snapshot.promise_jobs,
+            queued_timeout = snapshot.timeout_jobs,
+            queued_generic = snapshot.generic_jobs,
+            reason = "max_execution_time exceeded",
+            "tail_poll_aborted"
+        );
+
+        #[cfg(test)]
+        test_support::record_tail_poll_abort(job_id, snapshot);
+    }
+
+    /// Parses and evaluates a module, invokes its default export, sends the main outcome through
+    /// `early_reply`, then continues polling tail jobs until quiescence or deadline.
+    pub(crate) fn run_source_with_early_reply<F>(
+        &mut self,
+        job: MechanicsJob,
+        job_id: &str,
+        early_reply: F,
+    ) -> Result<(), MechanicsError>
+    where
+        F: FnOnce(Result<Value, MechanicsError>),
+    {
         let (source, arg, config) = job.into_parts();
         self.hooks.clear();
         let config_inner = Arc::unwrap_or_clone(config);
         let mut prepared_endpoints = HashMap::with_capacity(config_inner.endpoints().len());
         for (name, endpoint) in config_inner.endpoints() {
-            let prepared = endpoint.prepare_runtime().map_err(JsError::from_rust)?;
+            let prepared = endpoint
+                .prepare_runtime()
+                .map_err(JsError::from_rust)
+                .map_err(Self::js_error_to_execution)?;
             prepared_endpoints.insert(name.clone(), prepared);
         }
         let state = MechanicsState::new(
@@ -228,11 +310,13 @@ impl RuntimeInternal {
             prepared_endpoints,
         );
 
-        let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)?;
+        let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)
+            .map_err(Self::js_error_to_execution)?;
         let ctx = &mut self.ctx;
-        let isolated_realm = ctx.create_realm()?;
+        let isolated_realm = ctx.create_realm().map_err(Self::js_error_to_execution)?;
         let previous_realm = ctx.enter_realm(isolated_realm);
         builtins::bundle_builtin_modules(&self.loader, ctx);
+        Self::install_timer_builtins(ctx).map_err(Self::js_error_to_execution)?;
 
         let runtime_limits = ctx.runtime_limits_mut();
         runtime_limits.set_loop_iteration_limit(self.execution_limits.max_loop_iterations);
@@ -244,7 +328,9 @@ impl RuntimeInternal {
 
         let source = source.as_ref();
         let source = Source::from_bytes(source);
-        let result = (|| -> JsResult<JsValue> {
+        let mut early_reply = Some(early_reply);
+        let mut main_replied = false;
+        let result = (|| -> JsResult<()> {
             let module = Module::parse(source, None, ctx)?;
             let module_eval = module.load_link_evaluate(ctx);
             ctx.run_jobs()?;
@@ -272,9 +358,10 @@ impl RuntimeInternal {
             let res = main.call(&JsValue::null(), &[arg], ctx)?;
             let res = res.as_promise().unwrap_or(JsPromise::resolve(res, ctx));
 
-            ctx.run_jobs()?;
+            let _ = Rc::clone(&self.queue)
+                .run_jobs_until(ctx, || !matches!(res.state(), PromiseState::Pending))?;
 
-            match res.state() {
+            let main_result = match res.state() {
                 // If main fulfilled, the script's own try/catch chain already
                 // produced a successful outcome — trust it. We intentionally do
                 // NOT consult `has_unhandled_rejections()` here.
@@ -306,34 +393,149 @@ impl RuntimeInternal {
                 // separate and stays strict because top-level awaits in user
                 // scripts are rare and a module-load failure is a different
                 // class of problem.
-                PromiseState::Fulfilled(v) => Ok(v),
-                PromiseState::Pending => Err(JsError::from_native(
-                    JsNativeError::runtime_limit()
-                        .with_message("Default export promise did not settle"),
-                )),
-                PromiseState::Rejected(e) => Err(JsError::from_opaque(e)),
+                PromiseState::Fulfilled(v) => Self::js_value_to_json(ctx, v),
+                PromiseState::Pending => {
+                    Err(Self::js_error_to_execution(Self::main_pending_error()))
+                }
+                PromiseState::Rejected(e) => {
+                    Err(Self::js_error_to_execution(JsError::from_opaque(e)))
+                }
+            };
+
+            if matches!(res.state(), PromiseState::Pending) {
+                return Err(Self::main_pending_error());
             }
+
+            main_replied = true;
+            if let Some(reply) = early_reply.take() {
+                reply(main_result);
+            }
+
+            match Rc::clone(&self.queue).run_jobs_to_quiescence(ctx)? {
+                RunJobsExit::Complete => {}
+                RunJobsExit::DeadlineExceeded(snapshot) => {
+                    Self::log_tail_poll_aborted(job_id, snapshot);
+                }
+            }
+            Ok(())
         })();
+
+        #[cfg(test)]
+        let pending_unhandled_rejections = self.hooks.pending_unhandled_rejection_count();
 
         ctx.remove_data::<MechanicsState>();
         self.queue.set_deadline(None);
         self.queue.clear_all();
         self.hooks.clear();
         ctx.enter_realm(previous_realm);
-        result
+
+        #[cfg(test)]
+        test_support::record_unhandled_rejection_count(job_id, pending_unhandled_rejections);
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) if main_replied => {
+                let _ = e;
+                Ok(())
+            }
+            Err(e) => Err(Self::js_error_to_execution(e)),
+        }
     }
 
     /// Runs source and converts the resulting JS value into `serde_json::Value`.
+    // Kept for direct internal callers; worker dispatch uses the early-reply entry point.
+    #[allow(dead_code)]
     pub(crate) fn run_source(&mut self, job: MechanicsJob) -> Result<Value, MechanicsError> {
-        match self.run_source_inner(job) {
-            Ok(data) => {
-                let ctx = &mut self.ctx;
-                data.to_json(ctx)
-                    .map(|d| d.unwrap_or(Value::Null))
-                    .map_err(|e| MechanicsError::execution(e.to_string()))
-            }
-
-            Err(e) => Err(MechanicsError::execution(e.to_string())),
+        let mut main_result = None;
+        let tail_result = self.run_source_with_early_reply(job, "direct", |result| {
+            main_result = Some(result);
+        });
+        match main_result {
+            Some(result) => result,
+            None => match tail_result {
+                Ok(()) => Err(MechanicsError::execution(
+                    "script completed without producing a main result",
+                )),
+                Err(err) => Err(err),
+            },
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recorded_unhandled_rejection_count_for_test(job_id: &str) -> Option<usize> {
+        test_support::recorded_unhandled_rejection_count(job_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_tail_poll_abort_records_for_test() {
+        test_support::clear_tail_poll_abort_records();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tail_poll_abort_records_for_test() -> Vec<test_support::TailPollAbortRecord> {
+        test_support::tail_poll_abort_records()
+    }
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::QueueSnapshot;
+    use std::sync::{Mutex, OnceLock};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) struct TailPollAbortRecord {
+        pub(crate) job_id: String,
+        pub(crate) snapshot: QueueSnapshot,
+    }
+
+    static TAIL_POLL_ABORTS: OnceLock<Mutex<Vec<TailPollAbortRecord>>> = OnceLock::new();
+    static UNHANDLED_REJECTION_COUNTS: OnceLock<Mutex<Vec<(String, usize)>>> = OnceLock::new();
+
+    fn tail_poll_aborts() -> &'static Mutex<Vec<TailPollAbortRecord>> {
+        TAIL_POLL_ABORTS.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    fn unhandled_rejection_counts() -> &'static Mutex<Vec<(String, usize)>> {
+        UNHANDLED_REJECTION_COUNTS.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    pub(crate) fn record_tail_poll_abort(job_id: &str, snapshot: QueueSnapshot) {
+        tail_poll_aborts()
+            .lock()
+            .expect("lock tail poll abort records")
+            .push(TailPollAbortRecord {
+                job_id: job_id.to_owned(),
+                snapshot,
+            });
+    }
+
+    pub(crate) fn clear_tail_poll_abort_records() {
+        tail_poll_aborts()
+            .lock()
+            .expect("lock tail poll abort records")
+            .clear();
+    }
+
+    pub(crate) fn tail_poll_abort_records() -> Vec<TailPollAbortRecord> {
+        tail_poll_aborts()
+            .lock()
+            .expect("lock tail poll abort records")
+            .clone()
+    }
+
+    pub(crate) fn record_unhandled_rejection_count(job_id: &str, count: usize) {
+        unhandled_rejection_counts()
+            .lock()
+            .expect("lock unhandled rejection records")
+            .push((job_id.to_owned(), count));
+    }
+
+    pub(crate) fn recorded_unhandled_rejection_count(job_id: &str) -> Option<usize> {
+        unhandled_rejection_counts()
+            .lock()
+            .expect("lock unhandled rejection records")
+            .iter()
+            .rev()
+            .find_map(|(id, count)| (id == job_id).then_some(*count))
     }
 }
