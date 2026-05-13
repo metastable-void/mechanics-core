@@ -24,7 +24,7 @@ getrandom = "0.4.2"
 hex = "0.4.3"
 http = "1"
 mechanics-config = "0.1.0"
-mechanics-http-client = { path = "../mechanics-http-client" }
+mechanics-http-client = "0.1"
 parking_lot = "0.12.5"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
