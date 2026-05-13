@@ -20,7 +20,7 @@ The crate API is exported from `src/lib.rs` by module path:
 
 ## High-level model
 1. You build a `MechanicsPool`.
-2. Pool config optionally provides a Rust-side endpoint transport (`endpoint_http_client`) or uses the default reqwest-backed transport.
+2. Pool config optionally provides a Rust-side endpoint transport (`endpoint_http_client`) or uses the default `DefaultEndpointHttpClient` (backed by `mechanics-http-client` = hyper-rustls + webpki-roots + aws-lc-rs).
 3. You submit a `MechanicsJob` containing:
 - module source (`module_source`),
 - JSON argument (`arg`),
@@ -316,7 +316,7 @@ Response-size behavior:
 - bounded job queue (`queue_capacity`),
 - N worker threads (`worker_count`),
 - supervisor thread with restart rate limiter (`restart_window`, `max_restarts_in_window`).
-- endpoint transport from `config.endpoint_http_client` (or default reqwest-backed transport when `None`).
+- endpoint transport from `config.endpoint_http_client` (or default `DefaultEndpointHttpClient` when `None`).
 - If any worker fails during startup runtime initialization, construction fails with `MechanicsError::RuntimePool` (no partial usable pool is returned).
 - `run_timeout` is validated at construction and rejected if the platform clock cannot represent `Instant::now() + run_timeout`.
 
@@ -433,11 +433,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 use std::sync::Arc;
 
 use mechanics_core::{MechanicsPool, MechanicsPoolConfig};
-use mechanics_core::endpoint::http_client::ReqwestEndpointHttpClient;
+use mechanics_core::endpoint::http_client::DefaultEndpointHttpClient;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let reqwest_client = reqwest::Client::builder().build()?;
-    let endpoint_http_client = Arc::new(ReqwestEndpointHttpClient::new(reqwest_client));
+    let http_client = mechanics_http_client::Client::builder().build()?;
+    let endpoint_http_client = Arc::new(DefaultEndpointHttpClient::new(http_client));
 
     let pool_config = MechanicsPoolConfig::default().with_endpoint_http_client(endpoint_http_client);
     let _pool = MechanicsPool::new(pool_config)?;

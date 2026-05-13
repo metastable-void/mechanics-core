@@ -1,6 +1,6 @@
 use crate::internal::{
     error::MechanicsError,
-    http::{ReqwestEndpointHttpClient, into_io_error},
+    http::{DefaultEndpointHttpClient, into_io_error},
     job::MechanicsJob,
 };
 use crossbeam_channel::{
@@ -116,14 +116,14 @@ impl MechanicsPool {
         let endpoint_http_client = if let Some(client) = config.endpoint_http_client.clone() {
             client
         } else {
-            let reqwest_client = reqwest::Client::builder()
+            let http_client = mechanics_http_client::Client::builder()
                 // Avoid reusing stale pooled keep-alive connections across long-running,
                 // bursty job workloads. This favors stability over connection reuse.
                 .pool_max_idle_per_host(0)
                 .build()
                 .map_err(into_io_error)
                 .map_err(|e| MechanicsError::runtime_pool(e.to_string()))?;
-            Arc::new(ReqwestEndpointHttpClient::new(reqwest_client))
+            Arc::new(DefaultEndpointHttpClient::new(http_client))
         };
 
         let (tx, rx) = bounded(config.queue_capacity);

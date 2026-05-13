@@ -1,4 +1,5 @@
 use super::EndpointHttpHeaders;
+use http::HeaderMap;
 use std::{
     collections::{HashMap, HashSet},
     io::Error,
@@ -20,21 +21,19 @@ pub(super) fn extract_exposed_response_headers_prepared(
 
 #[cfg(test)]
 pub(super) fn extract_exposed_response_headers(
-    headers: &reqwest::header::HeaderMap,
+    headers: &HeaderMap,
     allowlisted: &[String],
 ) -> std::io::Result<HashMap<String, String>> {
     let allowlisted = allowlisted
         .iter()
         .map(|name| name.to_ascii_lowercase())
         .collect::<HashSet<_>>();
-    let headers = EndpointHttpHeaders::from_reqwest(headers);
+    let headers = EndpointHttpHeaders::from_http_map(headers);
     extract_exposed_response_headers_prepared(&headers, &allowlisted)
 }
 
-pub(super) fn header_from_pairs(
-    pairs: Vec<(String, String)>,
-) -> std::io::Result<reqwest::header::HeaderMap> {
-    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+pub(super) fn header_from_pairs(pairs: Vec<(String, String)>) -> std::io::Result<HeaderMap> {
+    use http::{HeaderName, HeaderValue};
 
     let mut headers = HeaderMap::new();
     for (name, value) in pairs {

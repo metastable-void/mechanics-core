@@ -9,6 +9,25 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-13
+
+Changed (breaking): the default endpoint HTTP transport is now
+backed by `mechanics-http-client` (hyper-rustls + webpki-roots +
+aws-lc-rs) instead of `reqwest`.
+
+- Renamed: `ReqwestEndpointHttpClient` → `DefaultEndpointHttpClient`.
+  Constructor signature changed from
+  `ReqwestEndpointHttpClient::new(reqwest::Client)` to
+  `DefaultEndpointHttpClient::new(mechanics_http_client::Client)`.
+- Removed: the `reqwest` dependency. Callers that injected a
+  custom `reqwest::Client` via `MechanicsPoolConfig.endpoint_http_client`
+  must switch to `mechanics_http_client::Client` (or implement the
+  `EndpointHttpClient` trait directly).
+- Trust posture: the default transport's TLS trust store is the
+  bundled Mozilla CA bundle (`webpki-roots`) only — no OS-native
+  trust, no `rustls-platform-verifier`. Crypto provider is
+  `aws-lc-rs`; `ring` is no longer in the dep graph.
+
 ## [0.4.1] - 2026-05-12
 
 - Changed: the run-job response now returns when the script's

@@ -35,8 +35,8 @@ pub mod endpoint {
     /// Pluggable HTTP client module.
     pub mod http_client {
         pub use crate::internal::http::{
-            EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
-            EndpointHttpResponse, ReqwestEndpointHttpClient,
+            DefaultEndpointHttpClient, EndpointHttpClient, EndpointHttpHeaders,
+            EndpointHttpRequest, EndpointHttpRequestBody, EndpointHttpResponse,
         };
     }
 }

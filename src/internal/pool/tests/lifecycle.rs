@@ -11,7 +11,9 @@ fn test_shared(worker_count: usize, queue_capacity: usize) -> Arc<MechanicsPoolS
         .with_execution_limits(MechanicsExecutionLimits::default());
     Arc::new(MechanicsPoolShared::new(
         &config,
-        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
+        Arc::new(DefaultEndpointHttpClient::new(
+            mechanics_http_client::Client::new().expect("build http client"),
+        )),
         tx,
         rx,
         exit_tx,
@@ -356,7 +358,9 @@ fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
         .with_execution_limits(MechanicsExecutionLimits::default());
     let shared = Arc::new(MechanicsPoolShared::new(
         &config,
-        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
+        Arc::new(DefaultEndpointHttpClient::new(
+            mechanics_http_client::Client::new().expect("build http client"),
+        )),
         tx,
         rx,
         exit_tx,

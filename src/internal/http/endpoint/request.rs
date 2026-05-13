@@ -7,7 +7,7 @@ use crate::internal::http::{
     },
     template::percent_encode_component,
 };
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
+use http::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use std::{
     collections::HashSet,
     io::{Error, ErrorKind},
@@ -110,7 +110,7 @@ impl HttpEndpoint {
     }
 
     #[cfg(test)]
-    pub(super) fn build_url(&self, options: &EndpointCallOptions) -> std::io::Result<reqwest::Url> {
+    pub(super) fn build_url(&self, options: &EndpointCallOptions) -> std::io::Result<url::Url> {
         let prepared = self.prepare_runtime()?;
         self.build_url_prepared(options, &prepared)
     }
@@ -119,7 +119,7 @@ impl HttpEndpoint {
         &self,
         options: &EndpointCallOptions,
         prepared: &PreparedHttpEndpoint,
-    ) -> std::io::Result<reqwest::Url> {
+    ) -> std::io::Result<url::Url> {
         // Static endpoint invariants are validated once in `validate_config`/`prepare_runtime`.
         // Keep cheap debug assertions here to detect any internal drift without re-running
         // full structural checks on every call.
@@ -163,7 +163,7 @@ impl HttpEndpoint {
             }
         }
 
-        let mut url = reqwest::Url::parse(&resolved_url).map_err(into_io_error)?;
+        let mut url = url::Url::parse(&resolved_url).map_err(into_io_error)?;
         if url.fragment().is_some() {
             return Err(Error::new(
                 ErrorKind::InvalidInput,

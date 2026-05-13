@@ -17,29 +17,25 @@ const DEFAULT_USER_AGENT: &str = concat!(
 );
 
 pub(crate) trait HttpEndpointCompatExt {
-    fn build_url_for_options(&self, options: &EndpointCallOptions)
-    -> std::io::Result<reqwest::Url>;
+    fn build_url_for_options(&self, options: &EndpointCallOptions) -> std::io::Result<url::Url>;
     fn build_headers_for_options(
         &self,
         default_content_type: Option<&str>,
         options: &EndpointCallOptions,
-    ) -> std::io::Result<reqwest::header::HeaderMap>;
+    ) -> std::io::Result<http::HeaderMap>;
 }
 
 impl HttpEndpointCompatExt for HttpEndpoint {
-    fn build_url_for_options(
-        &self,
-        options: &EndpointCallOptions,
-    ) -> std::io::Result<reqwest::Url> {
+    fn build_url_for_options(&self, options: &EndpointCallOptions) -> std::io::Result<url::Url> {
         let url = HttpEndpoint::build_url(self, &options.url_params, &options.queries)?;
-        reqwest::Url::parse(&url).map_err(into_io_error)
+        url::Url::parse(&url).map_err(into_io_error)
     }
 
     fn build_headers_for_options(
         &self,
         default_content_type: Option<&str>,
         options: &EndpointCallOptions,
-    ) -> std::io::Result<reqwest::header::HeaderMap> {
+    ) -> std::io::Result<http::HeaderMap> {
         let endpoint_pairs = HttpEndpoint::build_headers(self, &options.headers)?;
         let mut pairs = Vec::with_capacity(endpoint_pairs.len().saturating_add(2));
         pairs.push(("user-agent".to_owned(), DEFAULT_USER_AGENT.to_owned()));
@@ -129,7 +125,7 @@ pub(crate) async fn execute_endpoint(
         Ok(EndpointHttpRequest {
             method,
             url: url.as_str().to_owned(),
-            headers: EndpointHttpHeaders::from_reqwest(&headers),
+            headers: EndpointHttpHeaders::from_http_map(&headers),
             timeout_ms,
             response_max_bytes,
             body,

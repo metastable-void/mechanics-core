@@ -37,7 +37,7 @@ pub struct MechanicsPoolConfig {
     pub(crate) max_restarts_in_window: usize,
     /// Pool-level endpoint transport used by `mechanics:endpoint` executions.
     ///
-    /// If `None`, the pool constructs a default reqwest-backed client.
+    /// If `None`, the pool constructs a default [`crate::DefaultEndpointHttpClient`].
     /// This is Rust-side runtime wiring and is intentionally not part of JSON job config.
     pub(crate) endpoint_http_client: Option<Arc<dyn EndpointHttpClient>>,
     /// Test-only hook to force worker runtime init failures during pool creation.

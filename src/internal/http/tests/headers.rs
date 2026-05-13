@@ -1,6 +1,6 @@
 use super::super::execute::HttpEndpointCompatExt;
 use super::super::*;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 
 #[test]
 fn build_headers_rejects_invalid_name() {

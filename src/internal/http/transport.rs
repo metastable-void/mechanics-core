@@ -1,4 +1,6 @@
+use http::HeaderMap;
 use mechanics_config::HttpMethod;
+use mechanics_http_client::{Method as HttpMethodKind, Response as HttpResponse};
 use serde_json::Value;
 use std::{
     collections::HashSet,
@@ -13,20 +15,20 @@ pub(crate) fn into_io_error<E: std::error::Error + Send + Sync + 'static>(e: E) 
     std::io::Error::other(e)
 }
 
-pub(crate) trait HttpMethodReqwestExt {
-    fn as_reqwest_method(&self) -> reqwest::Method;
+pub(crate) trait HttpMethodHttpExt {
+    fn as_http_method(&self) -> HttpMethodKind;
 }
 
-impl HttpMethodReqwestExt for HttpMethod {
-    fn as_reqwest_method(&self) -> reqwest::Method {
+impl HttpMethodHttpExt for HttpMethod {
+    fn as_http_method(&self) -> HttpMethodKind {
         match self {
-            HttpMethod::Get => reqwest::Method::GET,
-            HttpMethod::Post => reqwest::Method::POST,
-            HttpMethod::Put => reqwest::Method::PUT,
-            HttpMethod::Patch => reqwest::Method::PATCH,
-            HttpMethod::Delete => reqwest::Method::DELETE,
-            HttpMethod::Head => reqwest::Method::HEAD,
-            HttpMethod::Options => reqwest::Method::OPTIONS,
+            HttpMethod::Get => HttpMethodKind::GET,
+            HttpMethod::Post => HttpMethodKind::POST,
+            HttpMethod::Put => HttpMethodKind::PUT,
+            HttpMethod::Patch => HttpMethodKind::PATCH,
+            HttpMethod::Delete => HttpMethodKind::DELETE,
+            HttpMethod::Head => HttpMethodKind::HEAD,
+            HttpMethod::Options => HttpMethodKind::OPTIONS,
         }
     }
 }
@@ -79,9 +81,9 @@ impl EndpointHttpHeaders {
             .map(|(_, v)| v.as_str())
     }
 
-    pub(crate) fn from_reqwest(headers: &reqwest::header::HeaderMap) -> Self {
+    pub(crate) fn from_http_map(headers: &HeaderMap) -> Self {
         let mut out = Self::new();
-        let mut seen_multi: HashSet<reqwest::header::HeaderName> = HashSet::new();
+        let mut seen_multi: HashSet<http::HeaderName> = HashSet::new();
         for name in headers.keys() {
             let name = name.clone();
             if seen_multi.insert(name.clone()) {
@@ -95,28 +97,6 @@ impl EndpointHttpHeaders {
             }
         }
         out
-    }
-
-    pub(crate) fn to_reqwest(&self) -> std::io::Result<reqwest::header::HeaderMap> {
-        let mut map = reqwest::header::HeaderMap::new();
-        for (name, value) in &self.entries {
-            let header_name =
-                reqwest::header::HeaderName::try_from(name.as_str()).map_err(|e| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!("invalid transport request header name `{name}`: {e}"),
-                    )
-                })?;
-            let header_value =
-                reqwest::header::HeaderValue::try_from(value.as_str()).map_err(|e| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!("invalid transport request header value for `{name}`: {e}"),
-                    )
-                })?;
-            map.append(header_name, header_value);
-        }
-        Ok(map)
     }
 }
 
@@ -164,31 +144,31 @@ pub trait EndpointHttpClient: Send + Sync + std::fmt::Debug {
     ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>>;
 }
 
-/// Default endpoint HTTP client backed by `reqwest`.
+/// Default endpoint HTTP client backed by [`mechanics_http_client::Client`]
+/// (hyper-rustls + webpki-roots + aws-lc-rs).
 #[derive(Clone, Debug)]
-pub struct ReqwestEndpointHttpClient {
-    client: reqwest::Client,
+pub struct DefaultEndpointHttpClient {
+    client: mechanics_http_client::Client,
 }
 
-impl ReqwestEndpointHttpClient {
-    /// Wraps a configured reqwest client as an endpoint transport.
-    pub fn new(client: reqwest::Client) -> Self {
+impl DefaultEndpointHttpClient {
+    /// Wraps a configured [`mechanics_http_client::Client`] as an endpoint transport.
+    pub fn new(client: mechanics_http_client::Client) -> Self {
         Self { client }
     }
 }
 
-impl EndpointHttpClient for ReqwestEndpointHttpClient {
+impl EndpointHttpClient for DefaultEndpointHttpClient {
     fn execute(
         &self,
         request: EndpointHttpRequest,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
         let client = self.client.clone();
         Box::pin(async move {
-            let url = reqwest::Url::parse(&request.url).map_err(into_io_error)?;
-            let headers = request.headers.to_reqwest()?;
-            let mut req = client
-                .request(request.method.as_reqwest_method(), url)
-                .headers(headers);
+            let mut req = client.request(request.method.as_http_method(), &request.url);
+            for (name, value) in request.headers.iter() {
+                req = req.header(name, value);
+            }
 
             if let Some(timeout_ms) = request.timeout_ms {
                 req = req.timeout(Duration::from_millis(timeout_ms));
@@ -200,14 +180,14 @@ impl EndpointHttpClient for ReqwestEndpointHttpClient {
                     req = req.json(&v);
                 }
                 EndpointHttpRequestBody::Utf8(s) => {
-                    req = req.body(s);
+                    req = req.body(s.into_bytes());
                 }
                 EndpointHttpRequestBody::Bytes(bytes) => {
                     req = req.body(bytes);
                 }
             }
 
-            let res = req.send().await.map_err(|err| {
+            let res: HttpResponse = req.send().await.map_err(|err| {
                 if err.is_timeout() {
                     Error::new(ErrorKind::TimedOut, err)
                 } else {
@@ -216,7 +196,8 @@ impl EndpointHttpClient for ReqwestEndpointHttpClient {
             })?;
             let status = res.status().as_u16();
             let content_length = res.content_length();
-            let headers = EndpointHttpHeaders::from_reqwest(res.headers());
+            let headers = EndpointHttpHeaders::from_http_map(res.headers());
+
             if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
                 && len > max as u64
             {
@@ -228,23 +209,20 @@ impl EndpointHttpClient for ReqwestEndpointHttpClient {
                 ));
             }
 
-            let mut body = Vec::new();
-            let mut res = res;
-            while let Some(chunk) = res.chunk().await.map_err(into_io_error)? {
-                if let Some(max) = request.response_max_bytes {
-                    let next_len = body.len().checked_add(chunk.len()).ok_or(Error::new(
-                        ErrorKind::InvalidData,
-                        "response body size overflow while enforcing max bytes limit",
-                    ))?;
-                    if next_len > max {
+            let body = match request.response_max_bytes {
+                Some(max) => match res.bytes_with_cap(max).await {
+                    Ok(bytes) => bytes.to_vec(),
+                    Err(mechanics_http_client::Error::BodyTooLarge { limit, .. }) => {
                         return Err(Error::new(
                             ErrorKind::InvalidData,
-                            format!("response body exceeds configured max bytes ({max})"),
+                            format!("response body exceeds configured max bytes ({limit})"),
                         ));
                     }
-                }
-                body.extend_from_slice(&chunk);
-            }
+                    Err(err) => return Err(into_io_error(err)),
+                },
+                None => res.bytes().await.map_err(into_io_error)?.to_vec(),
+            };
+
             Ok(EndpointHttpResponse {
                 status,
                 headers,

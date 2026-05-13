@@ -10,7 +10,7 @@ across jobs.
 ## What this crate provides
 - Bounded worker pool (`MechanicsPool`) for job execution.
 - Synchronous non-blocking pool state snapshots (`MechanicsPool::stats`, `MechanicsPoolStats`).
-- Swappable pool-level endpoint HTTP transport via `MechanicsPoolConfig.endpoint_http_client` (`reqwest` wrapper by default), useful for deterministic/mock testing.
+- Swappable pool-level endpoint HTTP transport via `MechanicsPoolConfig.endpoint_http_client` (`DefaultEndpointHttpClient`, backed by `mechanics-http-client` = hyper-rustls + webpki-roots + aws-lc-rs, by default), useful for deterministic/mock testing.
   Transport execution runs on an internal Tokio runtime.
 - Per-job execution limits (`MechanicsExecutionLimits`).
 - Synthetic JS modules:
@@ -23,7 +23,7 @@ Public API is organized by module in `src/lib.rs`:
 - root: `MechanicsPool`, `MechanicsPoolConfig`, `MechanicsPoolStats`, `MechanicsError`, `MechanicsErrorKind`
 - `mechanics_core::job`: `MechanicsJob`, `MechanicsExecutionLimits`, `MechanicsConfig`
 - `mechanics_core::endpoint`: `HttpEndpoint`, `HttpMethod`, `EndpointBodyType`, `EndpointRetryPolicy`, `UrlParamSpec`, `QuerySpec`, `SlottedQueryMode`
-- `mechanics_core::endpoint::http_client`: `EndpointHttpClient`, `ReqwestEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`, `EndpointHttpHeaders`
+- `mechanics_core::endpoint::http_client`: `EndpointHttpClient`, `DefaultEndpointHttpClient`, `EndpointHttpRequest`, `EndpointHttpRequestBody`, `EndpointHttpResponse`, `EndpointHttpHeaders`
 
 ## Scopes
 This crate is intended to be integrated into systems as automation/orchestration layers.

@@ -3,7 +3,7 @@ use crate::{
     MechanicsError,
     endpoint::{
         EndpointBodyType, HttpEndpoint, HttpMethod, QuerySpec, SlottedQueryMode, UrlParamSpec,
-        http_client::ReqwestEndpointHttpClient,
+        http_client::DefaultEndpointHttpClient,
     },
     job::{MechanicsConfig, MechanicsExecutionLimits, MechanicsJob},
 };
@@ -143,7 +143,9 @@ fn synthetic_pool(
         .with_max_restarts_in_window(1);
     let shared = Arc::new(MechanicsPoolShared::new(
         &config,
-        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
+        Arc::new(DefaultEndpointHttpClient::new(
+            mechanics_http_client::Client::new().expect("build http client"),
+        )),
         tx,
         rx,
         exit_tx,

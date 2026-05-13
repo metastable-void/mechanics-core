@@ -10,8 +10,8 @@ pub use mechanics_config::{
     EndpointRetryPolicy, HttpMethod, QuerySpec, SlottedQueryMode, UrlParamSpec,
 };
 pub use transport::{
-    EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
-    EndpointHttpResponse, ReqwestEndpointHttpClient,
+    DefaultEndpointHttpClient, EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest,
+    EndpointHttpRequestBody, EndpointHttpResponse,
 };
 
 pub(crate) use endpoint::execute_endpoint;

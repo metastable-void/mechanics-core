@@ -16,7 +16,9 @@ fn test_shared_with_channels(
         .with_execution_limits(MechanicsExecutionLimits::default());
     Arc::new(MechanicsPoolShared::new(
         &config,
-        Arc::new(ReqwestEndpointHttpClient::new(reqwest::Client::new())),
+        Arc::new(DefaultEndpointHttpClient::new(
+            mechanics_http_client::Client::new().expect("build http client"),
+        )),
         tx,
         rx,
         exit_tx,
