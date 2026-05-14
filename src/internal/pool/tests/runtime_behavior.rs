@@ -306,6 +306,25 @@ fn mock_endpoint_config() -> MechanicsConfig {
     )
 }
 
+#[derive(Debug)]
+struct HangingEndpointHttpClient;
+
+impl EndpointHttpClient for HangingEndpointHttpClient {
+    fn execute(
+        &self,
+        _request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+fn slow_endpoint_config() -> MechanicsConfig {
+    endpoint_config(
+        "slow",
+        HttpEndpoint::new(HttpMethod::Get, "https://slow.local/ping", HashMap::new()),
+    )
+}
+
 fn wait_for_call_count(counter: &AtomicUsize, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -431,8 +450,8 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
 }
 
 #[test]
-fn d17_set_timeout_without_await_runs_during_tail_poll() {
-    let job_id = "d17-timeout-tail";
+fn d17_unawaited_promise_runs_during_tail_poll() {
+    let job_id = "d17-unawaited-promise-tail";
     RuntimeInternal::clear_tail_poll_abort_records_for_test();
     let calls = Arc::new(AtomicUsize::new(0));
     let mut runtime =
@@ -444,7 +463,7 @@ fn d17_set_timeout_without_await_runs_during_tail_poll() {
         r#"
             import endpoint from "mechanics:endpoint";
             export default function main(_arg) {
-                setTimeout(() => { endpoint("mock", {}); }, 50);
+                Promise.resolve().then(() => { endpoint("mock", {}); });
                 return { ok: 4 };
             }
         "#,
@@ -452,7 +471,7 @@ fn d17_set_timeout_without_await_runs_during_tail_poll() {
         Value::Null,
     );
 
-    let value = runtime.run_source(job).expect("run timer tail job");
+    let value = runtime.run_source(job).expect("run promise tail job");
 
     assert_eq!(value, json!({"ok": 4}));
     assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -466,22 +485,26 @@ fn d17_deadline_mid_tail_poll_replies_then_warns_once() {
     let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
     let handle = thread::spawn(move || {
         let mut runtime =
-            RuntimeInternal::new_with_endpoint_http_client(Arc::new(ImmediateEndpointHttpClient {
-                call_count: Arc::new(AtomicUsize::new(0)),
-            }))
-            .expect("create runtime");
+            RuntimeInternal::new_with_endpoint_http_client(Arc::new(HangingEndpointHttpClient))
+                .expect("create runtime");
         runtime.set_execution_limits(MechanicsExecutionLimits {
             max_execution_time: Duration::from_millis(200),
             ..Default::default()
         });
+        // The endpoint promise from `endpoint("slow", {})` never
+        // resolves (HangingEndpointHttpClient returns
+        // `std::future::pending()`), so the runtime's in-flight
+        // async-job counter stays positive past main's reply and
+        // tail-poll runs until the per-job deadline aborts it.
         let job = make_job(
             r#"
+                import endpoint from "mechanics:endpoint";
                 export default function main(_arg) {
-                    setTimeout(() => { globalThis.__late = true; }, 10000);
+                    endpoint("slow", {}).then(() => { globalThis.__late = true; });
                     return { ok: 5 };
                 }
             "#,
-            MechanicsConfig::new(HashMap::new()).expect("create config"),
+            slow_endpoint_config(),
             Value::Null,
         );
         let started = Instant::now();
@@ -513,8 +536,12 @@ fn d17_deadline_mid_tail_poll_replies_then_warns_once() {
         .iter()
         .find(|record| record.job_id == job_id)
         .expect("tail-poll abort should be recorded");
-    assert_eq!(record.snapshot.in_flight_async_jobs, 0);
-    assert_eq!(record.snapshot.timeout_jobs, 1);
+    assert!(
+        record.snapshot.in_flight_async_jobs >= 1,
+        "expected pending endpoint future, got snapshot {:?}",
+        record.snapshot
+    );
+    assert_eq!(record.snapshot.timeout_jobs, 0);
 }
 
 #[test]

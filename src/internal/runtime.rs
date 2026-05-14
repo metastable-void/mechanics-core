@@ -5,11 +5,9 @@ use crate::internal::{
     job::{MechanicsExecutionLimits, MechanicsJob},
 };
 use boa_engine::{
-    Context, JsArgs, JsData, JsError, JsNativeError, JsResult, JsValue, Module, NativeFunction,
-    Source, Trace,
+    Context, JsData, JsError, JsNativeError, JsResult, JsValue, Module, Source, Trace,
     builtins::promise::{OperationType, PromiseState},
     context::{ContextBuilder, HostHooks, time::JsInstant},
-    job::{Job, TimeoutJob},
     js_string,
     object::{JsObject, builtins::JsPromise},
 };
@@ -192,9 +190,6 @@ impl RuntimeInternal {
             })?;
 
         builtins::bundle_builtin_modules(&loader, &mut context);
-        Self::install_timer_builtins(&mut context).map_err(|e| {
-            MechanicsError::runtime_pool(format!("failed to initialize timer builtins: {e}"))
-        })?;
 
         Ok(Self {
             ctx: context,
@@ -228,30 +223,6 @@ impl RuntimeInternal {
 
     fn js_error_to_execution(error: JsError) -> MechanicsError {
         MechanicsError::execution(error.to_string())
-    }
-
-    fn set_timeout(_this: &JsValue, args: &[JsValue], context: &mut Context) -> JsResult<JsValue> {
-        let callback = args
-            .get_or_undefined(0)
-            .as_callable()
-            .ok_or(JsError::from_native(
-                JsNativeError::typ().with_message("setTimeout callback is not callable"),
-            ))?;
-        let delay_ms = u64::from(args.get_or_undefined(1).to_u32(context)?);
-        let timeout = TimeoutJob::from_duration(
-            move |context| callback.call(&JsValue::undefined(), &[], context),
-            std::time::Duration::from_millis(delay_ms),
-        );
-        context.enqueue_job(Job::TimeoutJob(timeout));
-        Ok(JsValue::undefined())
-    }
-
-    fn install_timer_builtins(context: &mut Context) -> JsResult<()> {
-        context.register_global_builtin_callable(
-            js_string!("setTimeout"),
-            2,
-            NativeFunction::from_fn_ptr(Self::set_timeout),
-        )
     }
 
     fn main_pending_error() -> JsError {
@@ -316,7 +287,6 @@ impl RuntimeInternal {
         let isolated_realm = ctx.create_realm().map_err(Self::js_error_to_execution)?;
         let previous_realm = ctx.enter_realm(isolated_realm);
         builtins::bundle_builtin_modules(&self.loader, ctx);
-        Self::install_timer_builtins(ctx).map_err(Self::js_error_to_execution)?;
 
         let runtime_limits = ctx.runtime_limits_mut();
         runtime_limits.set_loop_iteration_limit(self.execution_limits.max_loop_iterations);

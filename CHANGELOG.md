@@ -16,6 +16,24 @@ this crate adheres to
   direct dependencies with explicit feature lists for what the
   crate actually uses. No behaviour change. (D24)
 
+### Removed (breaking for JS workloads)
+- The `setTimeout(callback, delay_ms)` realm global is gone.
+  It was a Web-Platform shim that violated the workspace's
+  "no non-ES globals" hard rule (see
+  `docs/design/06-execution-substrate.md` §"Realm surface
+  (no non-ES globals)"). JS workloads should use Promise-based
+  patterns instead — `Promise.resolve().then(...)` for
+  microtask deferral, `(async () => { ... })()` for unawaited
+  async work, endpoint promises with `.then(...)` for async
+  side effects scheduled from sync `main`. The tail-promise
+  polling behaviour (D17) remains unchanged for Promise-driven
+  in-flight work; only the JS-visible timer-binding is
+  removed. The internal `set_timeout` Rust fn,
+  `install_timer_builtins` Rust fn, and both call sites in
+  `internal::runtime` were deleted; the runtime no longer
+  registers `setTimeout` on the default realm nor on per-job
+  isolated realms.
+
 ## [0.5.0] - 2026-05-13
 
 Changed (breaking): the default endpoint HTTP transport is now
