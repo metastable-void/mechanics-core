@@ -1,6 +1,6 @@
 [package]
 name = "mechanics-core"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.88"
 
@@ -14,7 +14,14 @@ keywords = ["automation", "orchestration", "javascript", "worker-pool", "boa"]
 categories = ["concurrency", "config", "api-bindings"]
 
 [features]
-default = ["rand", "encoding", "html", "console", "url"]
+# Default = every feature that some workspace consumer actually
+# uses. This keeps `cargo check --workspace` (and pre-landing.sh)
+# compiling every gated module so type-mismatches in non-default
+# code paths can't slip into a release (mechanics 0.5.2's
+# `handle_h3_request` regression caught by exactly this gap).
+# Embedders that don't want a particular module use
+# `default-features = false` plus an explicit feature list.
+default = ["rand", "encoding", "html", "console", "url", "mime"]
 rand = []
 encoding = ["dep:data-encoding"]
 html = []

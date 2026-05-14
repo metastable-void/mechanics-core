@@ -9,6 +9,22 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-14
+
+### Changed
+- Added `mime` to the default-features set. The workspace's
+  pre-landing convention is "default = every feature some
+  consumer actually exercises" so `cargo check --workspace`
+  compiles every gated module path. Without this, the `mime`
+  module code was never reached by the workspace's default-
+  features check, and a regression in `mechanics:mime` would
+  silently slip through the same gap that hid the mechanics
+  0.5.2 `handle_h3_request` mismatch. Embedders using
+  `default-features = false` are unaffected; embedders using
+  default features now get `mime` automatically with no new
+  transitive dependencies (`data-encoding` was already
+  default-on via `encoding`).
+
 ## [0.6.0] - 2026-05-14
 
 ### Added
