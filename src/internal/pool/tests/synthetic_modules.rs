@@ -3,7 +3,8 @@
     feature = "rand",
     feature = "console",
     feature = "html",
-    feature = "url"
+    feature = "url",
+    feature = "mime"
 ))]
 use super::*;
 
@@ -775,4 +776,204 @@ fn url_module_to_string_to_json_and_statics() {
     assert_eq!(value["cannotRelative"], json!(false));
     assert_eq!(value["parsed"], json!("https://example.com/y"));
     assert_eq!(value["failed"], Value::Null);
+}
+
+#[test]
+#[cfg(feature = "mime")]
+fn mime_module_composes_simple_text_with_crlf_and_quoted_printable_header() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { compose } from "mechanics:mime";
+            export default function main(_arg) {
+                const raw = compose({
+                    headers: { Subject: "こんにちは" },
+                    body: "hello\ncafé",
+                });
+                return {
+                    raw,
+                    hasCrLf: raw.includes("\r\n"),
+                    noBareLf: !/(^|[^\r])\n/.test(raw),
+                    subjectEncoded: raw.includes("Subject: =?UTF-8?Q?"),
+                    transfer: raw.includes("Content-Transfer-Encoding: quoted-printable"),
+                    bodyEncoded: raw.includes("caf=C3=A9"),
+                    mimeVersion: raw.includes("MIME-Version: 1.0\r\n"),
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["hasCrLf"], json!(true));
+    assert_eq!(value["noBareLf"], json!(true));
+    assert_eq!(value["subjectEncoded"], json!(true));
+    assert_eq!(value["transfer"], json!(true));
+    assert_eq!(value["bodyEncoded"], json!(true));
+    assert_eq!(value["mimeVersion"], json!(true));
+}
+
+#[test]
+#[cfg(feature = "mime")]
+fn mime_module_composes_multipart_and_uint8array_body() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { compose } from "mechanics:mime";
+            export default function main(_arg) {
+                const raw = compose({
+                    headers: { Subject: "Files" },
+                    parts: [
+                        { headers: { "Content-Type": "text/plain; charset=utf-8" }, body: "plain" },
+                        {
+                            headers: { "Content-Type": "application/octet-stream" },
+                            body: new Uint8Array([0, 1, 2, 250, 255]),
+                        },
+                    ],
+                });
+                const boundary = /boundary="([^"]+)"/.exec(raw)[1];
+                return {
+                    raw,
+                    mixed: raw.includes("Content-Type: multipart/mixed; boundary="),
+                    firstPart: raw.includes("Content-Transfer-Encoding: 7bit\r\n\r\nplain"),
+                    binaryPart: raw.includes("Content-Transfer-Encoding: base64"),
+                    encodedBytes: raw.includes("AAEC+v8="),
+                    closes: raw.includes("--" + boundary + "--\r\n"),
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["mixed"], json!(true));
+    assert_eq!(value["firstPart"], json!(true));
+    assert_eq!(value["binaryPart"], json!(true));
+    assert_eq!(value["encodedBytes"], json!(true));
+    assert_eq!(value["closes"], json!(true));
+}
+
+#[test]
+#[cfg(feature = "mime")]
+fn mime_module_parses_simple_and_multipart_messages() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { parse } from "mechanics:mime";
+            export default function main(_arg) {
+                const simple = parse(
+                    "Subject: =?UTF-8?Q?caf=C3=A9?=\n" +
+                    "Content-Type: text/plain; charset=utf-8\n" +
+                    "Content-Transfer-Encoding: quoted-printable\n\n" +
+                    "hello=20caf=C3=A9"
+                );
+                const multi = parse(
+                    "Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n" +
+                    "--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\npart one\r\n" +
+                    "--b\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\r\nAAEC\r\n" +
+                    "--b--\r\n"
+                );
+                return {
+                    subject: simple.headers.Subject,
+                    simpleBody: simple.body,
+                    partCount: multi.parts.length,
+                    textPart: multi.parts[0].body,
+                    bytes: Array.from(multi.parts[1].body),
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["subject"], json!("café"));
+    assert_eq!(value["simpleBody"], json!("hello café"));
+    assert_eq!(value["partCount"], json!(2));
+    assert_eq!(value["textPart"], json!("part one"));
+    assert_eq!(value["bytes"], json!([0, 1, 2]));
+}
+
+#[test]
+#[cfg(feature = "mime")]
+fn mime_module_roundtrips_structured_message() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { compose, parse } from "mechanics:mime";
+            export default function main(_arg) {
+                const raw = compose({
+                    headers: { Subject: "Round trip" },
+                    parts: [
+                        { body: "hello" },
+                        { headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array([9, 8, 7]) },
+                    ],
+                });
+                const parsed = parse(raw);
+                return {
+                    subject: parsed.headers.Subject,
+                    first: parsed.parts[0].body,
+                    second: Array.from(parsed.parts[1].body),
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["subject"], json!("Round trip"));
+    assert_eq!(value["first"], json!("hello"));
+    assert_eq!(value["second"], json!([9, 8, 7]));
+}
+
+#[test]
+#[cfg(feature = "mime")]
+fn mime_module_malformed_input_throws_type_error() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { parse } from "mechanics:mime";
+            export default function main(_arg) {
+                try {
+                    parse("Subject without colon\r\n\r\nbody");
+                } catch (e) {
+                    return e instanceof TypeError;
+                }
+                return false;
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value, json!(true));
 }

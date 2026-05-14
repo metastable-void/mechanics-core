@@ -29,6 +29,16 @@ this crate adheres to
 - Added `mechanics:url` behind the `url` feature. The module
   default-exports a WHATWG-style `URL` class and named-exports
   `URLSearchParams`, backed by the existing `url` crate.
+- Added `mechanics:mime` behind the non-default `mime` feature.
+  The module named-exports pure no-I/O `compose` and `parse`
+  functions for structured MIME message objects. It emits CRLF
+  line endings, auto-adds `MIME-Version: 1.0`, generates
+  multipart boundaries, encodes non-ASCII headers as RFC 2047
+  UTF-8 encoded-words, and handles `7bit`, `8bit`, `binary`,
+  `quoted-printable`, and `base64` transfer encodings. The
+  implementation is format-only, installs no globals, uses no
+  per-job shared state, and is backed by in-module MIME logic
+  plus the existing `data-encoding` crate for Base64.
 
 ### Changed
 - `mechanics:rand` and `mechanics:uuid` are now gated by the

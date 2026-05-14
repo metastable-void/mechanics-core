@@ -29,6 +29,8 @@ mod form_urlencoded;
 mod hex;
 #[cfg(feature = "html")]
 mod html;
+#[cfg(feature = "mime")]
+mod mime;
 #[cfg(feature = "rand")]
 mod rand;
 #[cfg(feature = "url")]
@@ -237,6 +239,9 @@ pub(super) fn bundle_builtin_modules(loader: &Rc<CustomModuleLoader>, context: &
 
     #[cfg(feature = "url")]
     url::register(loader, context);
+
+    #[cfg(feature = "mime")]
+    mime::register(loader, context);
 }
 
 #[cfg(test)]
