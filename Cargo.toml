@@ -14,7 +14,7 @@ keywords = ["automation", "orchestration", "javascript", "worker-pool", "boa"]
 categories = ["concurrency", "config", "api-bindings"]
 
 [dependencies]
-boa_engine = { version = "0.21.0", default-features = false, features = ["float16", "intl", "temporal", "xsum"] } # kept: JS-runtime API contract — Intl (ECMA-402), Temporal, Float16Array, Math.sumPrecise must remain available to JS workloads even when no in-tree script grep-attests them. float16/xsum are boa's upstream defaults; intl + temporal are mechanics-core's explicit extras.
+boa_engine = { version = "0.21.0", default-features = false, features = ["float16", "temporal", "xsum"] } # kept: JS-runtime API contract — Temporal/Float16Array/Math.sumPrecise (stage-3+ proposals) must remain available to JS workloads even when no in-tree script grep-attests them. float16/xsum are boa's upstream defaults; temporal is mechanics-core's explicit extra. `intl` (ECMA-402) is wanted but blocked: boa 0.21 pins `icu_provider = "~2.0.0"` while the workspace's `url`/`idna_adapter`/`icu_normalizer` chain already locks `icu_provider 2.2.0` — version-unification conflict. Re-attempt when boa relaxes its icu tilde-constraint (typically a future minor release).
 boa_gc = { version = "0.21.0", default-features = false, features = [] }
 crossbeam-channel = { version = "0.5.15", default-features = false, features = ["std"] }
 data-encoding = { version = "2.9.0", default-features = false, features = ["std"] }
