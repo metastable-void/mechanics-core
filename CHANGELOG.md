@@ -9,6 +9,13 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-14
+
+### Changed
+- Internal Cargo.toml audit: `default-features = false` set on
+  direct dependencies with explicit feature lists for what the
+  crate actually uses. No behaviour change. (D24)
+
 ## [0.5.0] - 2026-05-13
 
 Changed (breaking): the default endpoint HTTP transport is now
