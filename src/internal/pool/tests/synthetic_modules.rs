@@ -2,7 +2,8 @@
     feature = "encoding",
     feature = "rand",
     feature = "console",
-    feature = "html"
+    feature = "html",
+    feature = "url"
 ))]
 use super::*;
 
@@ -493,4 +494,285 @@ fn html_module_rejects_non_string_arg() {
         }
         other => panic!("unexpected error kind: {other}"),
     }
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_module_constructs_and_exposes_accessors() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import URL from "mechanics:url";
+            export default function main(_arg) {
+                const url = new URL("https://user:pass@example.com:8443/a/b?x=1#frag");
+                return {
+                    href: url.href,
+                    origin: url.origin,
+                    protocol: url.protocol,
+                    username: url.username,
+                    password: url.password,
+                    host: url.host,
+                    hostname: url.hostname,
+                    port: url.port,
+                    pathname: url.pathname,
+                    search: url.search,
+                    hash: url.hash,
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(
+        value["href"],
+        json!("https://user:pass@example.com:8443/a/b?x=1#frag")
+    );
+    assert_eq!(value["origin"], json!("https://example.com:8443"));
+    assert_eq!(value["protocol"], json!("https:"));
+    assert_eq!(value["username"], json!("user"));
+    assert_eq!(value["password"], json!("pass"));
+    assert_eq!(value["host"], json!("example.com:8443"));
+    assert_eq!(value["hostname"], json!("example.com"));
+    assert_eq!(value["port"], json!("8443"));
+    assert_eq!(value["pathname"], json!("/a/b"));
+    assert_eq!(value["search"], json!("?x=1"));
+    assert_eq!(value["hash"], json!("#frag"));
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_module_supports_base_relative_construction() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import URL from "mechanics:url";
+            export default function main(_arg) {
+                return new URL("../next?q=1", "https://example.com/a/b/current").href;
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value, json!("https://example.com/a/next?q=1"));
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_module_rejects_invalid_input_and_bare_call() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import URL from "mechanics:url";
+            export default function main(_arg) {
+                let invalid = false;
+                let bare = false;
+                try { new URL("not relative"); } catch (e) { invalid = e instanceof TypeError; }
+                try { URL("https://example.com/"); } catch (e) { bare = e instanceof TypeError; }
+                return { invalid, bare };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value, json!({"invalid": true, "bare": true}));
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_module_property_mutation_updates_href() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import URL from "mechanics:url";
+            export default function main(_arg) {
+                const url = new URL("https://example.com/a?x=1#old");
+                url.protocol = "http:";
+                url.hostname = "example.org";
+                url.port = "8080";
+                url.pathname = "b/c";
+                url.search = "?y=2";
+                url.hash = "new";
+                return url.href;
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value, json!("http://example.org:8080/b/c?y=2#new"));
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_module_search_params_mutations_bind_to_url() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import URL from "mechanics:url";
+            export default function main(_arg) {
+                const url = new URL("https://example.com/path?z=last&a=old&a=second");
+                const params = url.searchParams;
+                params.append("m", "middle");
+                params.set("a", "first");
+                params.delete("z");
+                params.sort();
+                url.search = "?q=reset";
+                params.append("tail", "yes");
+                return {
+                    href: url.href,
+                    search: url.search,
+                    params: params.toString(),
+                    entries: Array.from(params.entries()),
+                    keys: Array.from(params.keys()),
+                    values: Array.from(params.values()),
+                    spread: Array.from(params),
+                    size: params.size,
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(
+        value["href"],
+        json!("https://example.com/path?q=reset&tail=yes")
+    );
+    assert_eq!(value["search"], json!("?q=reset&tail=yes"));
+    assert_eq!(value["params"], json!("q=reset&tail=yes"));
+    assert_eq!(value["entries"], json!([["q", "reset"], ["tail", "yes"]]));
+    assert_eq!(value["keys"], json!(["q", "tail"]));
+    assert_eq!(value["values"], json!(["reset", "yes"]));
+    assert_eq!(value["spread"], json!([["q", "reset"], ["tail", "yes"]]));
+    assert_eq!(value["size"], json!(2));
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_search_params_supports_string_iterable_and_object_inputs() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { URLSearchParams } from "mechanics:url";
+            export default function main(_arg) {
+                const fromString = new URLSearchParams("?a=1&a=2+b");
+                const fromIterable = new URLSearchParams([["z", "9"], ["a", "1"]]);
+                const fromObject = new URLSearchParams({ b: "2", a: "1" });
+                const seen = [];
+                fromIterable.forEach((value, name, self) => {
+                    seen.push([name, value, self === fromIterable]);
+                });
+                return {
+                    string: {
+                        first: fromString.get("a"),
+                        all: fromString.getAll("a"),
+                        hasValue: fromString.has("a", "2 b"),
+                        hasMissingValue: fromString.has("a", "missing"),
+                        text: fromString.toString(),
+                    },
+                    iterable: {
+                        text: fromIterable.toString(),
+                        seen,
+                    },
+                    object: {
+                        entries: Array.from(fromObject.entries()).sort(),
+                    },
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["string"]["first"], json!("1"));
+    assert_eq!(value["string"]["all"], json!(["1", "2 b"]));
+    assert_eq!(value["string"]["hasValue"], json!(true));
+    assert_eq!(value["string"]["hasMissingValue"], json!(false));
+    assert_eq!(value["string"]["text"], json!("a=1&a=2+b"));
+    assert_eq!(value["iterable"]["text"], json!("z=9&a=1"));
+    assert_eq!(
+        value["iterable"]["seen"],
+        json!([["z", "9", true], ["a", "1", true]])
+    );
+    assert_eq!(value["object"]["entries"], json!([["a", "1"], ["b", "2"]]));
+}
+
+#[test]
+#[cfg(feature = "url")]
+fn url_module_to_string_to_json_and_statics() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import URL from "mechanics:url";
+            export default function main(_arg) {
+                const url = new URL("/x", "https://example.com/base/");
+                const parsed = URL.parse("/y", "https://example.com/base/");
+                const failed = URL.parse("/z");
+                return {
+                    text: url.toString(),
+                    json: url.toJSON(),
+                    canAbsolute: URL.canParse("https://example.com/"),
+                    canRelative: URL.canParse("/rel", "https://example.com/"),
+                    cannotRelative: URL.canParse("/rel"),
+                    parsed: parsed.href,
+                    failed,
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["text"], json!("https://example.com/x"));
+    assert_eq!(value["json"], json!("https://example.com/x"));
+    assert_eq!(value["canAbsolute"], json!(true));
+    assert_eq!(value["canRelative"], json!(true));
+    assert_eq!(value["cannotRelative"], json!(false));
+    assert_eq!(value["parsed"], json!("https://example.com/y"));
+    assert_eq!(value["failed"], Value::Null);
 }

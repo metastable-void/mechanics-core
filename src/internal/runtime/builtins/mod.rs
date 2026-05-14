@@ -31,6 +31,8 @@ mod hex;
 mod html;
 #[cfg(feature = "rand")]
 mod rand;
+#[cfg(feature = "url")]
+mod url;
 #[cfg(feature = "rand")]
 mod uuid;
 
@@ -232,6 +234,9 @@ pub(super) fn bundle_builtin_modules(loader: &Rc<CustomModuleLoader>, context: &
 
     #[cfg(feature = "console")]
     console::register(loader, context);
+
+    #[cfg(feature = "url")]
+    url::register(loader, context);
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ this crate adheres to
 
 ### Added
 - Added the default-on `[features]` surface:
-  `default = ["rand", "encoding", "html", "console"]`.
+  `default = ["rand", "encoding", "html", "console", "url"]`.
   Consumers using default features retain the previous built-in
   module behaviour; consumers can now opt out with
   `default-features = false` and re-enable individual module
@@ -26,6 +26,9 @@ this crate adheres to
 - Added `mechanics:html` behind the `html` feature. The module
   wraps `htmlize` as named exports `escapeText`,
   `escapeAttribute`, `unescapeText`, and `unescapeAttribute`.
+- Added `mechanics:url` behind the `url` feature. The module
+  default-exports a WHATWG-style `URL` class and named-exports
+  `URLSearchParams`, backed by the existing `url` crate.
 
 ### Changed
 - `mechanics:rand` and `mechanics:uuid` are now gated by the
