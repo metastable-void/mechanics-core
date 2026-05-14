@@ -6,22 +6,35 @@ use crate::internal::{
         into_io_error,
     },
 };
+#[cfg(any(feature = "encoding", feature = "html"))]
+use boa_engine::JsArgs;
+use boa_engine::{Context, JsError, JsResult, JsString, JsValue, js_string, object::JsObject};
+#[cfg(feature = "encoding")]
 use boa_engine::{
-    Context, JsArgs, JsError, JsResult, JsString, JsValue, Module, NativeFunction, js_string,
-    module::SyntheticModuleInitializer,
-    object::{FunctionObjectBuilder, JsObject},
+    Module, NativeFunction, module::SyntheticModuleInitializer, object::FunctionObjectBuilder,
 };
 use serde_json::Value;
 use std::{collections::HashMap, rc::Rc};
 
+#[cfg(feature = "encoding")]
 mod base32;
+#[cfg(feature = "encoding")]
 mod base64;
+#[cfg(feature = "console")]
+mod console;
 mod endpoint;
+#[cfg(feature = "encoding")]
 mod form_urlencoded;
+#[cfg(feature = "encoding")]
 mod hex;
+#[cfg(feature = "html")]
+mod html;
+#[cfg(feature = "rand")]
 mod rand;
+#[cfg(feature = "rand")]
 mod uuid;
 
+#[cfg(feature = "encoding")]
 struct CodecModuleSpec {
     module_name: &'static str,
     encode_name: &'static str,
@@ -32,6 +45,7 @@ struct CodecModuleSpec {
     decode_length: usize,
 }
 
+#[cfg(feature = "encoding")]
 fn register_codec_module(
     loader: &Rc<CustomModuleLoader>,
     context: &mut Context,
@@ -95,6 +109,7 @@ fn parse_string_map_field(
         .map_err(JsError::from_rust)
 }
 
+#[cfg(any(feature = "encoding", feature = "html"))]
 fn required_string_arg(args: &[JsValue], index: usize, name: &str) -> JsResult<String> {
     args.get_or_undefined(index)
         .as_string()
@@ -102,6 +117,7 @@ fn required_string_arg(args: &[JsValue], index: usize, name: &str) -> JsResult<S
         .ok_or_else(|| buffer_like::js_type_error(format!("{name} must be a string")))
 }
 
+#[cfg(feature = "encoding")]
 fn required_buffer_like_arg(
     args: &[JsValue],
     index: usize,
@@ -196,12 +212,26 @@ fn endpoint_response_to_js_value(
 
 pub(super) fn bundle_builtin_modules(loader: &Rc<CustomModuleLoader>, context: &mut Context) {
     endpoint::register(loader, context);
-    form_urlencoded::register(loader, context);
-    base64::register(loader, context);
-    hex::register(loader, context);
-    base32::register(loader, context);
-    rand::register(loader, context);
-    uuid::register(loader, context);
+
+    #[cfg(feature = "encoding")]
+    {
+        form_urlencoded::register(loader, context);
+        base64::register(loader, context);
+        hex::register(loader, context);
+        base32::register(loader, context);
+    }
+
+    #[cfg(feature = "rand")]
+    {
+        rand::register(loader, context);
+        uuid::register(loader, context);
+    }
+
+    #[cfg(feature = "html")]
+    html::register(loader, context);
+
+    #[cfg(feature = "console")]
+    console::register(loader, context);
 }
 
 #[cfg(test)]

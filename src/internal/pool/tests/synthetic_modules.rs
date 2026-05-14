@@ -1,6 +1,13 @@
+#[cfg(any(
+    feature = "encoding",
+    feature = "rand",
+    feature = "console",
+    feature = "html"
+))]
 use super::*;
 
 #[test]
+#[cfg(feature = "encoding")]
 fn form_urlencoded_module_roundtrip() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -29,6 +36,7 @@ fn form_urlencoded_module_roundtrip() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn form_urlencoded_module_encode_is_key_ordered() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -53,6 +61,7 @@ fn form_urlencoded_module_encode_is_key_ordered() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn base64_module_roundtrip_base64url() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -85,6 +94,7 @@ fn base64_module_roundtrip_base64url() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn hex_module_roundtrip() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -112,6 +122,7 @@ fn hex_module_roundtrip() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn base32_module_roundtrip_base32hex() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -145,6 +156,7 @@ fn base32_module_roundtrip_base32hex() {
 }
 
 #[test]
+#[cfg(feature = "rand")]
 fn rand_module_fills_buffer() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -173,6 +185,7 @@ fn rand_module_fills_buffer() {
 }
 
 #[test]
+#[cfg(feature = "rand")]
 fn rand_module_fills_arraybuffer_and_dataview() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -211,6 +224,7 @@ fn rand_module_fills_arraybuffer_and_dataview() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn base64_decode_rejects_invalid_input() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -239,6 +253,7 @@ fn base64_decode_rejects_invalid_input() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn hex_decode_rejects_invalid_input() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -267,6 +282,7 @@ fn hex_decode_rejects_invalid_input() {
 }
 
 #[test]
+#[cfg(feature = "encoding")]
 fn base32_decode_rejects_invalid_input() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -295,6 +311,7 @@ fn base32_decode_rejects_invalid_input() {
 }
 
 #[test]
+#[cfg(feature = "rand")]
 fn uuid_module_supports_core_variants() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -337,6 +354,7 @@ fn uuid_module_supports_core_variants() {
 }
 
 #[test]
+#[cfg(feature = "rand")]
 fn uuid_module_rejects_missing_v5_options() {
     let pool = MechanicsPool::new(MechanicsPoolConfig {
         worker_count: 1,
@@ -359,6 +377,119 @@ fn uuid_module_rejects_missing_v5_options() {
     match err {
         MechanicsError::Execution(msg) => {
             assert!(msg.contains("options"));
+        }
+        other => panic!("unexpected error kind: {other}"),
+    }
+}
+
+#[test]
+#[cfg(feature = "console")]
+fn console_module_methods_are_noop_undefined() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import console from "mechanics:console";
+            export default function main(_arg) {
+                return {
+                    log: console.log(),
+                    info: console.info("hello"),
+                    warn: console.warn("x", 1, true, null),
+                    error: console.error({ code: "E" }, ["a"]),
+                    debug: console.debug(undefined, { nested: { ok: true } }),
+                    levelCount: ["log", "info", "warn", "error", "debug"]
+                        .filter((name) => typeof console[name] === "function").length,
+                    hasGlobalConsole: "console" in globalThis,
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["levelCount"], json!(5));
+    assert_eq!(value["hasGlobalConsole"], json!(false));
+    for key in ["log", "info", "warn", "error", "debug"] {
+        assert_eq!(value[key], Value::Null);
+    }
+}
+
+#[test]
+#[cfg(feature = "html")]
+fn html_module_escape_and_unescape_roundtrips() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import {
+                escapeText,
+                escapeAttribute,
+                unescapeText,
+                unescapeAttribute,
+            } from "mechanics:html";
+
+            export default function main(_arg) {
+                const raw = "a&b<c>\"'";
+                const textEscaped = escapeText(raw);
+                const attrEscaped = escapeAttribute(raw);
+                return {
+                    textEscaped,
+                    attrEscaped,
+                    textRoundtrip: unescapeText(textEscaped),
+                    attrRoundtrip: unescapeAttribute(attrEscaped),
+                    textCanonical: unescapeText("&amp;&lt;&gt;&quot;&apos;"),
+                    attrCanonical: unescapeAttribute("1&times2&lt;3"),
+                };
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let value = pool.run(job).expect("run module");
+    assert_eq!(value["textEscaped"], json!("a&amp;b&lt;c&gt;\"'"));
+    assert_eq!(value["attrEscaped"], json!("a&amp;b&lt;c&gt;&quot;&apos;"));
+    assert_eq!(value["textRoundtrip"], json!("a&b<c>\"'"));
+    assert_eq!(value["attrRoundtrip"], json!("a&b<c>\"'"));
+    assert_eq!(value["textCanonical"], json!("&<>\"'"));
+    assert_eq!(value["attrCanonical"], json!("1&times2<3"));
+}
+
+#[test]
+#[cfg(feature = "html")]
+fn html_module_rejects_non_string_arg() {
+    let pool = MechanicsPool::new(MechanicsPoolConfig {
+        worker_count: 1,
+        ..Default::default()
+    })
+    .expect("create pool");
+
+    let source = r#"
+            import { escapeText } from "mechanics:html";
+            export default function main(_arg) {
+                return escapeText(123);
+            }
+        "#;
+    let job = make_job(
+        source,
+        MechanicsConfig::new(HashMap::new()).expect("create config"),
+        Value::Null,
+    );
+    let err = pool
+        .run(job)
+        .expect_err("non-string html input should fail");
+    match err {
+        MechanicsError::Execution(msg) => {
+            assert!(msg.contains("text must be a string"));
         }
         other => panic!("unexpected error kind: {other}"),
     }

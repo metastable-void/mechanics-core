@@ -9,6 +9,31 @@ this crate adheres to
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-14
+
+### Added
+- Added the default-on `[features]` surface:
+  `default = ["rand", "encoding", "html", "console"]`.
+  Consumers using default features retain the previous built-in
+  module behaviour; consumers can now opt out with
+  `default-features = false` and re-enable individual module
+  families explicitly.
+- Added `mechanics:console` behind the `console` feature. The
+  module default-exports a `console` object with no-op `log`,
+  `info`, `warn`, `error`, and `debug` methods. The methods do
+  no I/O and emit no tracing; future capture into
+  `RunJobResponse` is out of scope for this release.
+- Added `mechanics:html` behind the `html` feature. The module
+  wraps `htmlize` as named exports `escapeText`,
+  `escapeAttribute`, `unescapeText`, and `unescapeAttribute`.
+
+### Changed
+- `mechanics:rand` and `mechanics:uuid` are now gated by the
+  default-on `rand` feature.
+- `mechanics:form-urlencoded`, `mechanics:base64`,
+  `mechanics:base32`, and `mechanics:hex` are now gated by the
+  default-on `encoding` feature.
+
 ## [0.5.1] - 2026-05-14
 
 ### Changed

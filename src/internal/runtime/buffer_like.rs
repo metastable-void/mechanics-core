@@ -1,3 +1,4 @@
+#[cfg(feature = "rand")]
 use crate::internal::http::into_io_error;
 use boa_engine::{
     Context, JsError, JsNativeError, JsResult, JsString, JsValue,
@@ -74,6 +75,7 @@ pub(super) fn try_extract_buffer_like_bytes(
     Ok(None)
 }
 
+#[cfg(feature = "rand")]
 fn fill_random_in_array_buffer_range(
     buffer: &JsArrayBuffer,
     offset: usize,
@@ -93,6 +95,7 @@ fn fill_random_in_array_buffer_range(
         .map_err(JsError::from_rust)
 }
 
+#[cfg(feature = "rand")]
 pub(super) fn fill_random_buffer_like(value: &JsValue, context: &mut Context) -> JsResult<()> {
     let Some(object) = value.as_object() else {
         return Err(js_type_error(
