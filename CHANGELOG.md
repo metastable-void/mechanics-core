@@ -24,6 +24,24 @@ this crate adheres to
   behaviour change. Covered by
   `endpoint_transport_errors_include_endpoint_name`.
 
+### Fixed
+- The default `EndpointHttpClient` impl in
+  `internal/http/transport.rs` now wraps the entire request
+  operation (build → send → status/content-length check →
+  body read) in an outer `tokio::time::timeout` when the
+  endpoint configures `timeout_ms`, in addition to the
+  inner reqwest-equivalent per-request timeout. mhc and any
+  future endpoint client should honour the inner timer, but
+  a path that doesn't (e.g. an h3 stage that doesn't propagate
+  the per-request timeout to a backgrounded driver task) was
+  letting `endpoint("llm")` POSTs sit past the configured
+  endpoint timeout and stop only at the outer mechanics
+  300 s envelope. Belt-and-braces: the outer timer is the
+  same `timeout_ms` value, so a well-behaved client path
+  sees no observable change, while a misbehaving client
+  surfaces as ``Error: endpoint `<name>` request failed:
+  request timed out`` at the configured budget.
+
 ## [0.6.1] - 2026-05-14
 
 ### Changed

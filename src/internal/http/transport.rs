@@ -164,71 +164,84 @@ impl EndpointHttpClient for DefaultEndpointHttpClient {
         request: EndpointHttpRequest,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
         let client = self.client.clone();
+        let timeout_ms = request.timeout_ms;
         Box::pin(async move {
-            let mut req = client.request(request.method.as_http_method(), &request.url);
-            for (name, value) in request.headers.iter() {
-                req = req.header(name, value);
-            }
-
-            if let Some(timeout_ms) = request.timeout_ms {
-                req = req.timeout(Duration::from_millis(timeout_ms));
-            }
-
-            match request.body {
-                EndpointHttpRequestBody::Absent => {}
-                EndpointHttpRequestBody::Json(v) => {
-                    req = req.json(&v);
+            let operation = async move {
+                let mut req = client.request(request.method.as_http_method(), &request.url);
+                for (name, value) in request.headers.iter() {
+                    req = req.header(name, value);
                 }
-                EndpointHttpRequestBody::Utf8(s) => {
-                    req = req.body(s.into_bytes());
-                }
-                EndpointHttpRequestBody::Bytes(bytes) => {
-                    req = req.body(bytes);
-                }
-            }
 
-            let res: HttpResponse = req.send().await.map_err(|err| {
-                if err.is_timeout() {
-                    Error::new(ErrorKind::TimedOut, err)
-                } else {
-                    into_io_error(err)
+                if let Some(timeout_ms) = request.timeout_ms {
+                    req = req.timeout(Duration::from_millis(timeout_ms));
                 }
-            })?;
-            let status = res.status().as_u16();
-            let content_length = res.content_length();
-            let headers = EndpointHttpHeaders::from_http_map(res.headers());
 
-            if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
-                && len > max as u64
-            {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    format!(
-                        "response body exceeds configured max bytes ({max}): content-length is {len}"
-                    ),
-                ));
-            }
-
-            let body = match request.response_max_bytes {
-                Some(max) => match res.bytes_with_cap(max).await {
-                    Ok(bytes) => bytes.to_vec(),
-                    Err(mechanics_http_client::Error::BodyTooLarge { limit, .. }) => {
-                        return Err(Error::new(
-                            ErrorKind::InvalidData,
-                            format!("response body exceeds configured max bytes ({limit})"),
-                        ));
+                match request.body {
+                    EndpointHttpRequestBody::Absent => {}
+                    EndpointHttpRequestBody::Json(v) => {
+                        req = req.json(&v);
                     }
-                    Err(err) => return Err(into_io_error(err)),
-                },
-                None => res.bytes().await.map_err(into_io_error)?.to_vec(),
+                    EndpointHttpRequestBody::Utf8(s) => {
+                        req = req.body(s.into_bytes());
+                    }
+                    EndpointHttpRequestBody::Bytes(bytes) => {
+                        req = req.body(bytes);
+                    }
+                }
+
+                let res: HttpResponse = req.send().await.map_err(|err| {
+                    if err.is_timeout() {
+                        Error::new(ErrorKind::TimedOut, err)
+                    } else {
+                        into_io_error(err)
+                    }
+                })?;
+                let status = res.status().as_u16();
+                let content_length = res.content_length();
+                let headers = EndpointHttpHeaders::from_http_map(res.headers());
+
+                if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
+                    && len > max as u64
+                {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!(
+                            "response body exceeds configured max bytes ({max}): content-length is {len}"
+                        ),
+                    ));
+                }
+
+                let body = match request.response_max_bytes {
+                    Some(max) => match res.bytes_with_cap(max).await {
+                        Ok(bytes) => bytes.to_vec(),
+                        Err(mechanics_http_client::Error::BodyTooLarge { limit, .. }) => {
+                            return Err(Error::new(
+                                ErrorKind::InvalidData,
+                                format!("response body exceeds configured max bytes ({limit})"),
+                            ));
+                        }
+                        Err(err) => return Err(into_io_error(err)),
+                    },
+                    None => res.bytes().await.map_err(into_io_error)?.to_vec(),
+                };
+
+                Ok(EndpointHttpResponse {
+                    status,
+                    headers,
+                    content_length,
+                    body,
+                })
             };
 
-            Ok(EndpointHttpResponse {
-                status,
-                headers,
-                content_length,
-                body,
-            })
+            match timeout_ms {
+                Some(timeout_ms) => {
+                    match tokio::time::timeout(Duration::from_millis(timeout_ms), operation).await {
+                        Ok(result) => result,
+                        Err(_) => Err(Error::new(ErrorKind::TimedOut, "request timed out")),
+                    }
+                }
+                None => operation.await,
+            }
         })
     }
 }
