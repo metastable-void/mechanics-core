@@ -66,7 +66,7 @@ export interface HttpEndpointJson {
   headers?: Record<string, string>;
   overridable_request_headers?: string[];
   exposed_response_headers?: string[];
-  request_body_type?: EndpointBodyType;
+  request_body_type?: EndpointBodyType | null;
   response_body_type?: EndpointBodyType;
   /** Must be >= 1 when provided. */
   response_max_bytes?: number | null;
@@ -80,8 +80,15 @@ export interface MechanicsConfigJson {
   endpoints: Record<string, HttpEndpointJson>;
 }
 
+export interface SerdeDurationJson {
+  secs: number;
+  nanos: number;
+}
+
 export interface MechanicsJobJson {
   module_source: string;
   arg: unknown;
   config: MechanicsConfigJson;
+  /** Serde `std::time::Duration` JSON shape; must be greater than zero when non-null. */
+  run_timeout?: SerdeDurationJson | null;
 }

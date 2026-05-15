@@ -14,6 +14,25 @@
     "arg": true,
     "config": {
       "$ref": "./mechanics-config.schema.json"
+    },
+    "run_timeout": {
+      "anyOf": [{ "$ref": "#/$defs/duration" }, { "type": "null" }]
+    }
+  },
+  "$defs": {
+    "duration": {
+      "description": "Serde-compatible JSON shape for std::time::Duration. MechanicsJob rejects zero duration when this field is present.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["secs", "nanos"],
+      "properties": {
+        "secs": { "type": "integer", "minimum": 0 },
+        "nanos": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      },
+      "anyOf": [
+        { "properties": { "secs": { "minimum": 1 } } },
+        { "properties": { "nanos": { "minimum": 1 } } }
+      ]
     }
   }
 }

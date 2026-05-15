@@ -112,7 +112,9 @@
           "type": "array",
           "items": { "type": "string" }
         },
-        "request_body_type": { "$ref": "#/$defs/endpointBodyType" },
+        "request_body_type": {
+          "anyOf": [{ "$ref": "#/$defs/endpointBodyType" }, { "type": "null" }]
+        },
         "response_body_type": { "$ref": "#/$defs/endpointBodyType" },
         "response_max_bytes": { "type": ["integer", "null"], "minimum": 1 },
         "timeout_ms": { "type": ["integer", "null"], "minimum": 1 },
