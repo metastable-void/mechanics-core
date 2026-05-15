@@ -4,6 +4,7 @@ use boa_engine::{
     Context, JsArgs, JsError, JsNativeError, Module, NativeFunction, js_string,
     module::SyntheticModuleInitializer, object::FunctionObjectBuilder,
 };
+use std::io::Error;
 use std::rc::Rc;
 
 pub(super) fn register(loader: &Rc<CustomModuleLoader>, context: &mut Context) {
@@ -42,7 +43,12 @@ pub(super) fn register(loader: &Rc<CustomModuleLoader>, context: &mut Context) {
                 &req_options,
             )
             .await
-            .map_err(JsError::from_rust)?;
+            .map_err(|error| {
+                JsError::from_rust(Error::new(
+                    error.kind(),
+                    format!("endpoint `{endpoint_name}` request failed: {error}"),
+                ))
+            })?;
 
             endpoint_response_to_js_value(res, &mut ctx.borrow_mut())
         }),

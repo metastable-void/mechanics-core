@@ -325,6 +325,23 @@ fn slow_endpoint_config() -> MechanicsConfig {
     )
 }
 
+#[derive(Debug)]
+struct TimedOutEndpointHttpClient;
+
+impl EndpointHttpClient for TimedOutEndpointHttpClient {
+    fn execute(
+        &self,
+        _request: EndpointHttpRequest,
+    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+        Box::pin(async move {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request timed out",
+            ))
+        })
+    }
+}
+
 fn wait_for_call_count(counter: &AtomicUsize, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -616,6 +633,36 @@ fn d17_main_never_settles_preserves_default_export_timeout_error() {
         }
         other => panic!("unexpected error kind: {other}"),
     }
+}
+
+#[test]
+fn endpoint_transport_errors_include_endpoint_name() {
+    let mut runtime =
+        RuntimeInternal::new_with_endpoint_http_client(Arc::new(TimedOutEndpointHttpClient))
+            .expect("create runtime");
+    let job = make_job(
+        r#"
+            import endpoint from "mechanics:endpoint";
+            export default async function main(_arg) {
+                try {
+                    await endpoint("llm", {});
+                } catch (e) {
+                    return String(e);
+                }
+            }
+        "#,
+        endpoint_config(
+            "llm",
+            HttpEndpoint::new(HttpMethod::Post, "https://mock.local/llm", HashMap::new()),
+        ),
+        Value::Null,
+    );
+
+    let value = runtime.run_source(job).expect("run endpoint error job");
+    assert_eq!(
+        value,
+        json!("Error: endpoint `llm` request failed: request timed out")
+    );
 }
 
 #[derive(Debug)]

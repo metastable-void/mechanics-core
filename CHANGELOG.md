@@ -9,6 +9,21 @@ this crate adheres to
 
 ## [Unreleased]
 
+### Changed
+- `mechanics:endpoint` now prefixes JS-visible transport
+  errors with the endpoint name. Previously a job that called
+  `await endpoint("llm", {...})` and timed out surfaced as
+  `Error: request timed out` with no indication of which
+  configured endpoint failed — operators reading the chat-
+  worker logs had to correlate timing to a `tcpdump` or a
+  connector-side trace to attribute the failure to a specific
+  endpoint (`embed`, `vector_search`, `llm`, `db`, etc.). The
+  new prefix renders as
+  ``Error: endpoint `llm` request failed: request timed out``
+  in the JS realm. Pure diagnostic — no transport-layer
+  behaviour change. Covered by
+  `endpoint_transport_errors_include_endpoint_name`.
+
 ## [0.6.1] - 2026-05-14
 
 ### Changed
