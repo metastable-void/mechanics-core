@@ -328,60 +328,64 @@ impl RuntimeInternal {
             let res = main.call(&JsValue::null(), &[arg], ctx)?;
             let res = res.as_promise().unwrap_or(JsPromise::resolve(res, ctx));
 
-            let _ = Rc::clone(&self.queue)
-                .run_jobs_until(ctx, || !matches!(res.state(), PromiseState::Pending))?;
+            let tail_exit = Rc::clone(&self.queue).run_jobs_until_then_to_quiescence(
+                ctx,
+                || !matches!(res.state(), PromiseState::Pending),
+                |ctx| {
+                    let main_result = match res.state() {
+                        // If main fulfilled, the script's own try/catch chain already
+                        // produced a successful outcome — trust it. We intentionally do
+                        // NOT consult `has_unhandled_rejections()` here.
+                        //
+                        // Why: Boa's `NativeFunction::from_async_fn` rejects an inner
+                        // promise that the await machinery wraps in an outer
+                        // continuation promise. The spec-compliant
+                        // `promise_rejection_tracker` fires `Reject` on the inner
+                        // rejection (no handlers attached at that moment), but the
+                        // matching `Handle` event for the inner promise does not
+                        // reliably fire when the handler is attached to the outer
+                        // wrapper rather than the inner promise. The counter then
+                        // ends positive even though every JS-visible rejection was
+                        // caught by the script's `await ... catch`.
+                        //
+                        // The strict check we used to do here produced false-positive
+                        // step failures for any workflow that legitimately catches an
+                        // endpoint error — including the canonical D13 chat-with-
+                        // fallback pattern. Match Node's semantics: an unhandled
+                        // rejection is a warning, not a process kill. Genuine
+                        // script-author bugs (e.g. `Promise.resolve().then(throw)`
+                        // with no catch anywhere) still produce a working but
+                        // misbehaving step rather than a hard failure — the cost of
+                        // that is much lower than breaking every workflow that
+                        // handles errors correctly.
+                        //
+                        // The module-evaluation-time check above (run after the
+                        // module is imported but before `main` is called) is
+                        // separate and stays strict because top-level awaits in user
+                        // scripts are rare and a module-load failure is a different
+                        // class of problem.
+                        PromiseState::Fulfilled(v) => Self::js_value_to_json(ctx, v),
+                        PromiseState::Pending => {
+                            Err(Self::js_error_to_execution(Self::main_pending_error()))
+                        }
+                        PromiseState::Rejected(e) => {
+                            Err(Self::js_error_to_execution(JsError::from_opaque(e)))
+                        }
+                    };
 
-            let main_result = match res.state() {
-                // If main fulfilled, the script's own try/catch chain already
-                // produced a successful outcome — trust it. We intentionally do
-                // NOT consult `has_unhandled_rejections()` here.
-                //
-                // Why: Boa's `NativeFunction::from_async_fn` rejects an inner
-                // promise that the await machinery wraps in an outer
-                // continuation promise. The spec-compliant
-                // `promise_rejection_tracker` fires `Reject` on the inner
-                // rejection (no handlers attached at that moment), but the
-                // matching `Handle` event for the inner promise does not
-                // reliably fire when the handler is attached to the outer
-                // wrapper rather than the inner promise. The counter then
-                // ends positive even though every JS-visible rejection was
-                // caught by the script's `await ... catch`.
-                //
-                // The strict check we used to do here produced false-positive
-                // step failures for any workflow that legitimately catches an
-                // endpoint error — including the canonical D13 chat-with-
-                // fallback pattern. Match Node's semantics: an unhandled
-                // rejection is a warning, not a process kill. Genuine
-                // script-author bugs (e.g. `Promise.resolve().then(throw)`
-                // with no catch anywhere) still produce a working but
-                // misbehaving step rather than a hard failure — the cost of
-                // that is much lower than breaking every workflow that
-                // handles errors correctly.
-                //
-                // The module-evaluation-time check above (run after the
-                // module is imported but before `main` is called) is
-                // separate and stays strict because top-level awaits in user
-                // scripts are rare and a module-load failure is a different
-                // class of problem.
-                PromiseState::Fulfilled(v) => Self::js_value_to_json(ctx, v),
-                PromiseState::Pending => {
-                    Err(Self::js_error_to_execution(Self::main_pending_error()))
-                }
-                PromiseState::Rejected(e) => {
-                    Err(Self::js_error_to_execution(JsError::from_opaque(e)))
-                }
-            };
+                    main_replied = true;
+                    if let Some(reply) = early_reply.take() {
+                        reply(main_result);
+                    }
+                    Ok(())
+                },
+            )?;
 
-            if matches!(res.state(), PromiseState::Pending) {
+            if !main_replied && matches!(res.state(), PromiseState::Pending) {
                 return Err(Self::main_pending_error());
             }
 
-            main_replied = true;
-            if let Some(reply) = early_reply.take() {
-                reply(main_result);
-            }
-
-            match Rc::clone(&self.queue).run_jobs_to_quiescence(ctx)? {
+            match tail_exit {
                 RunJobsExit::Complete => {}
                 RunJobsExit::DeadlineExceeded(snapshot) => {
                     Self::log_tail_poll_aborted(job_id, snapshot);

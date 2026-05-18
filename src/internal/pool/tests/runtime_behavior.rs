@@ -432,6 +432,7 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
     });
     let release_client = Arc::clone(&client);
     let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+    let (tail_done_tx, tail_done_rx) = crossbeam_channel::bounded(1);
 
     let handle = thread::spawn(move || {
         let mut runtime =
@@ -452,6 +453,7 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
                 reply_tx.send(result).expect("send early reply");
             })
             .expect("tail poll should finish after release");
+        tail_done_tx.send(()).expect("send tail completion");
     });
 
     let response = reply_rx
@@ -460,7 +462,16 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
         .expect("main response should succeed");
     assert_eq!(response, json!({"ok": 2}));
     wait_for_call_count(&calls, 1);
+    assert!(
+        tail_done_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err(),
+        "tail poll must keep the in-flight endpoint future alive until it completes"
+    );
     release_client.release();
+    tail_done_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("tail poll should finish after endpoint release");
     handle.join().expect("runtime thread should join");
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_no_tail_abort_for(job_id);

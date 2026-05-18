@@ -92,26 +92,25 @@ impl Queue {
         }
     }
 
-    pub(crate) fn run_jobs_until<F>(
+    pub(crate) fn run_jobs_until_then_to_quiescence<F, G>(
         self: Rc<Self>,
         context: &mut Context,
         should_stop: F,
+        on_stop: G,
     ) -> JsResult<RunJobsExit>
     where
         F: FnMut() -> bool,
+        G: FnOnce(&mut Context) -> JsResult<()>,
     {
         let this = Rc::clone(&self);
         self.tokio_local.block_on(
             &self.tokio_rt,
-            this.run_jobs_async_until(&RefCell::new(context), should_stop),
+            this.run_jobs_async_until_then_to_quiescence(
+                &RefCell::new(context),
+                should_stop,
+                on_stop,
+            ),
         )
-    }
-
-    pub(crate) fn run_jobs_to_quiescence(
-        self: Rc<Self>,
-        context: &mut Context,
-    ) -> JsResult<RunJobsExit> {
-        self.run_jobs_until(context, || false)
     }
 
     fn next_timeout_at(&self) -> Option<JsInstant> {
@@ -205,19 +204,26 @@ impl Queue {
         Ok(())
     }
 
-    async fn run_jobs_async_until<F>(
+    async fn run_jobs_async_until_then_to_quiescence<F, G>(
         self: Rc<Self>,
         context: &RefCell<&mut Context>,
         mut should_stop: F,
+        on_stop: G,
     ) -> JsResult<RunJobsExit>
     where
         F: FnMut() -> bool,
+        G: FnOnce(&mut Context) -> JsResult<()>,
     {
         let mut group = FutureGroup::new();
         let mut in_flight_async_jobs = 0_usize;
+        let mut stopped = false;
+        let mut on_stop = Some(on_stop);
         loop {
-            if should_stop() {
-                return Ok(RunJobsExit::Complete);
+            if !stopped && should_stop() {
+                if let Some(on_stop) = on_stop.take() {
+                    on_stop(&mut context.borrow_mut())?;
+                }
+                stopped = true;
             }
 
             {
@@ -285,9 +291,6 @@ impl Queue {
                     )
                 };
 
-                // If macrotask/microtask work is immediately available, do not wait on async
-                // completions first. Otherwise, sleep efficiently until async work completes or
-                // the next timeout/deadline boundary.
                 let next_result = if has_sync_ready_jobs {
                     None
                 } else if let Some(wait_budget) = wait_budget {
@@ -369,7 +372,10 @@ impl JobExecutor for Queue {
 
     /// Polls async jobs and drains task queues until no jobs remain.
     async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()> {
-        match self.run_jobs_async_until(context, || false).await? {
+        match self
+            .run_jobs_async_until_then_to_quiescence(context, || false, |_| Ok(()))
+            .await?
+        {
             RunJobsExit::Complete => Ok(()),
             RunJobsExit::DeadlineExceeded(_) => Err(Self::timeout_error()),
         }

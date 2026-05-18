@@ -43,6 +43,15 @@ this crate adheres to
   This keeps endpoint timeouts covering both phases while
   avoiding an outer future drop at an arbitrary transport await
   point.
+- The runtime job executor now preserves already-started native
+  async jobs across the early-reply boundary used by D17 tail
+  promise polling. Previously the main-promise wait and the
+  tail-poll wait owned separate in-flight future sets, so a
+  sibling endpoint promise could be cancelled when the main
+  promise settled even though tail polling was meant to keep
+  driving it. Covered by the tightened
+  `d17_fire_and_forget_endpoint_replies_before_tail_completes`
+  regression.
 
 ## [0.6.1] - 2026-05-14
 
