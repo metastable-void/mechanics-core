@@ -25,22 +25,24 @@ this crate adheres to
   `endpoint_transport_errors_include_endpoint_name`.
 
 ### Fixed
+- The default `EndpointHttpClient` now gives every
+  `mechanics:endpoint` execution a fresh TCP/TLS hyper transport
+  while preserving the shared `mechanics-http-client` HTTP/3
+  discovery and negative-cache state. This prevents a stalled or
+  cancelled endpoint call from poisoning the long-lived mechanics
+  worker's TCP connection pool and causing later jobs from new
+  workflow/chat instances to stall before any loopback packet is
+  emitted.
 - The default `EndpointHttpClient` impl in
-  `internal/http/transport.rs` now wraps the entire request
-  operation (build → send → status/content-length check →
-  body read) in an outer `tokio::time::timeout` when the
-  endpoint configures `timeout_ms`, in addition to the
-  inner reqwest-equivalent per-request timeout. mhc and any
-  future endpoint client should honour the inner timer, but
-  a path that doesn't (e.g. an h3 stage that doesn't propagate
-  the per-request timeout to a backgrounded driver task) was
-  letting `endpoint("llm")` POSTs sit past the configured
-  endpoint timeout and stop only at the outer mechanics
-  300 s envelope. Belt-and-braces: the outer timer is the
-  same `timeout_ms` value, so a well-behaved client path
-  sees no observable change, while a misbehaving client
-  surfaces as ``Error: endpoint `<name>` request failed:
-  request timed out`` at the configured budget.
+  `internal/http/transport.rs` now tracks `timeout_ms` as an
+  absolute per-request deadline instead of wrapping the whole
+  endpoint operation in an outer timeout. The request/header
+  phase receives the remaining budget through
+  `mechanics-http-client`, and the response-body phase receives
+  the remaining budget through an explicit body-read timeout.
+  This keeps endpoint timeouts covering both phases while
+  avoiding an outer future drop at an arbitrary transport await
+  point.
 
 ## [0.6.1] - 2026-05-14
 

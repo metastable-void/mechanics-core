@@ -7,7 +7,7 @@ use std::{
     future::Future,
     io::{Error, ErrorKind},
     pin::Pin,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Normalizes arbitrary error types into `std::io::Error` for shared propagation paths.
@@ -130,6 +130,34 @@ pub struct EndpointHttpResponse {
     pub body: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EndpointRequestDeadline {
+    expires_at: Instant,
+}
+
+impl EndpointRequestDeadline {
+    fn new(timeout_ms: Option<u64>) -> std::io::Result<Option<Self>> {
+        let Some(timeout_ms) = timeout_ms else {
+            return Ok(None);
+        };
+        let timeout = Duration::from_millis(timeout_ms);
+        let expires_at = Instant::now().checked_add(timeout).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "request timeout is too large for the current platform clock",
+            )
+        })?;
+        Ok(Some(Self { expires_at }))
+    }
+
+    fn remaining(self) -> std::io::Result<Duration> {
+        self.expires_at
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| Error::new(ErrorKind::TimedOut, "request timed out"))
+    }
+}
+
 /// Endpoint HTTP client abstraction configured at pool level.
 ///
 /// Runtime contract:
@@ -164,84 +192,89 @@ impl EndpointHttpClient for DefaultEndpointHttpClient {
         request: EndpointHttpRequest,
     ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
         let client = self.client.clone();
-        let timeout_ms = request.timeout_ms;
         Box::pin(async move {
-            let operation = async move {
-                let mut req = client.request(request.method.as_http_method(), &request.url);
-                for (name, value) in request.headers.iter() {
-                    req = req.header(name, value);
+            let client = client.fresh_transport().map_err(into_io_error)?;
+            let deadline = EndpointRequestDeadline::new(request.timeout_ms)?;
+            let mut req = client.request(request.method.as_http_method(), &request.url);
+            for (name, value) in request.headers.iter() {
+                req = req.header(name, value);
+            }
+
+            if let Some(deadline) = deadline {
+                req = req.timeout(deadline.remaining()?);
+            }
+
+            match request.body {
+                EndpointHttpRequestBody::Absent => {}
+                EndpointHttpRequestBody::Json(v) => {
+                    req = req.json(&v);
                 }
-
-                if let Some(timeout_ms) = request.timeout_ms {
-                    req = req.timeout(Duration::from_millis(timeout_ms));
+                EndpointHttpRequestBody::Utf8(s) => {
+                    req = req.body(s.into_bytes());
                 }
-
-                match request.body {
-                    EndpointHttpRequestBody::Absent => {}
-                    EndpointHttpRequestBody::Json(v) => {
-                        req = req.json(&v);
-                    }
-                    EndpointHttpRequestBody::Utf8(s) => {
-                        req = req.body(s.into_bytes());
-                    }
-                    EndpointHttpRequestBody::Bytes(bytes) => {
-                        req = req.body(bytes);
-                    }
+                EndpointHttpRequestBody::Bytes(bytes) => {
+                    req = req.body(bytes);
                 }
+            }
 
-                let res: HttpResponse = req.send().await.map_err(|err| {
-                    if err.is_timeout() {
-                        Error::new(ErrorKind::TimedOut, err)
-                    } else {
-                        into_io_error(err)
-                    }
-                })?;
-                let status = res.status().as_u16();
-                let content_length = res.content_length();
-                let headers = EndpointHttpHeaders::from_http_map(res.headers());
-
-                if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
-                    && len > max as u64
-                {
-                    return Err(Error::new(
-                        ErrorKind::InvalidData,
-                        format!(
-                            "response body exceeds configured max bytes ({max}): content-length is {len}"
-                        ),
-                    ));
+            let res: HttpResponse = req.send().await.map_err(|err| {
+                if err.is_timeout() {
+                    Error::new(ErrorKind::TimedOut, err)
+                } else {
+                    into_io_error(err)
                 }
+            })?;
+            let status = res.status().as_u16();
+            let content_length = res.content_length();
+            let headers = EndpointHttpHeaders::from_http_map(res.headers());
 
-                let body = match request.response_max_bytes {
+            if let (Some(max), Some(len)) = (request.response_max_bytes, content_length)
+                && len > max as u64
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "response body exceeds configured max bytes ({max}): content-length is {len}"
+                    ),
+                ));
+            }
+
+            let response_max_bytes = request.response_max_bytes;
+            let read_body = async move {
+                match response_max_bytes {
                     Some(max) => match res.bytes_with_cap(max).await {
-                        Ok(bytes) => bytes.to_vec(),
+                        Ok(bytes) => Ok(bytes.to_vec()),
                         Err(mechanics_http_client::Error::BodyTooLarge { limit, .. }) => {
-                            return Err(Error::new(
+                            Err(Error::new(
                                 ErrorKind::InvalidData,
                                 format!("response body exceeds configured max bytes ({limit})"),
-                            ));
+                            ))
                         }
-                        Err(err) => return Err(into_io_error(err)),
+                        Err(err) => Err(into_io_error(err)),
                     },
-                    None => res.bytes().await.map_err(into_io_error)?.to_vec(),
-                };
-
-                Ok(EndpointHttpResponse {
-                    status,
-                    headers,
-                    content_length,
-                    body,
-                })
+                    None => res
+                        .bytes()
+                        .await
+                        .map(|bytes| bytes.to_vec())
+                        .map_err(into_io_error),
+                }
             };
 
-            match timeout_ms {
-                Some(timeout_ms) => {
-                    match tokio::time::timeout(Duration::from_millis(timeout_ms), operation).await {
-                        Ok(result) => result,
-                        Err(_) => Err(Error::new(ErrorKind::TimedOut, "request timed out")),
-                    }
+            let body = if let Some(deadline) = deadline {
+                match tokio::time::timeout(deadline.remaining()?, read_body).await {
+                    Ok(result) => result?,
+                    Err(_) => return Err(Error::new(ErrorKind::TimedOut, "request timed out")),
                 }
-                None => operation.await,
-            }
+            } else {
+                read_body.await?
+            };
+
+            Ok(EndpointHttpResponse {
+                status,
+                headers,
+                content_length,
+                body,
+            })
         })
     }
 }
