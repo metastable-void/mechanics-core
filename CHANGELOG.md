@@ -39,6 +39,17 @@ this crate adheres to
   `crate::endpoint::http_client`.
 
 ### Fixed
+- `Queue::enqueue_job` no longer silently drops a `TimeoutJob`
+  whose delay overflows `JsInstant`. Previously the overflow
+  clamped to the `u64::MAX` sentinel and inserted the job at
+  an unreachable position in the BTreeMap, retaining the
+  closure indefinitely (until job teardown). The overflow path
+  now routes the failure through the runtime as a catchable
+  `RangeError("setTimeout delay is too large for the current
+  platform clock")`. JS-facing `setTimeout` is not exposed
+  in this runtime (removed in 0.5.x); the fix targets the
+  `Job::TimeoutJob` host-contract surface that Boa's internal
+  sequencing may still produce.
 - Endpoint `timeout_ms` is now an *aggregate* (total wall-clock)
   bound rather than a per-attempt bound. Previously
   `timeout_ms=30000, max_attempts=3` could spend ~90 s before

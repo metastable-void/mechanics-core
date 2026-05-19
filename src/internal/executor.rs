@@ -337,9 +337,27 @@ impl JobExecutor for Queue {
             Job::AsyncJob(job) => self.async_jobs.borrow_mut().push_back(job),
             Job::TimeoutJob(t) => {
                 let now = context.clock().now();
-                let at = Self::instant_checked_add(now, t.timeout().into()).unwrap_or_else(|| {
-                    Self::js_instant_from_millis(u64::MAX).unwrap_or(JsInstant::new(u64::MAX, 0))
-                });
+                let Some(at) = Self::instant_checked_add(now, t.timeout().into()) else {
+                    // Previously the overflow path was clamped to the
+                    // `u64::MAX` sentinel, which placed the timer at
+                    // an unreachable position in the BTreeMap — the
+                    // callback never fired and the `t` closure was
+                    // retained until job teardown. Route the failure
+                    // through the runtime as a synchronous
+                    // `RangeError` so the script sees a catchable JS
+                    // error instead of a silently-dropped timer.
+                    let realm = context.realm().clone();
+                    let err = GenericJob::new(
+                        move |_| {
+                            Err(JsError::from_native(JsNativeError::range().with_message(
+                                "setTimeout delay is too large for the current platform clock",
+                            )))
+                        },
+                        realm,
+                    );
+                    self.generic_jobs.borrow_mut().push_back(err);
+                    return;
+                };
                 self.timeout_jobs
                     .borrow_mut()
                     .entry(at)
