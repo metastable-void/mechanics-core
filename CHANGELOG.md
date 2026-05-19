@@ -39,6 +39,21 @@ this crate adheres to
   `crate::endpoint::http_client`.
 
 ### Fixed
+- Endpoint `timeout_ms` is now an *aggregate* (total wall-clock)
+  bound rather than a per-attempt bound. Previously
+  `timeout_ms=30000, max_attempts=3` could spend ~90 s before
+  returning — each attempt got a fresh full budget, so a slow
+  upstream that exhausted the budget three times racked up to
+  3× the configured timeout. After the change,
+  `execute_endpoint` computes a single deadline at function
+  entry and passes `remaining(deadline)` as each attempt's
+  `timeout_ms`; retry sleeps are bounded by the same
+  `remaining(deadline)`; when the deadline fires the loop
+  terminates with `io::ErrorKind::TimedOut` carrying
+  `endpoint call timed out across N attempt(s)`. Open-ended
+  calls (no `timeout_ms` configured) preserve the previous
+  unbounded shape. Pairs naturally with `Boa` runtime's
+  `max_execution_time`.
 - The endpoint retry loop no longer retries deterministic local
   conditions (body-cap violations, invalid-request shapes,
   decode failures) as if they were transient I/O errors.

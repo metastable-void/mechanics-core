@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::{
     io::{Error, ErrorKind},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 const DEFAULT_USER_AGENT: &str = concat!(
@@ -75,7 +76,33 @@ pub(crate) async fn execute_endpoint(
     };
 
     let headers = endpoint.build_headers_for_options(default_content_type, options)?;
-    let build_request = || -> std::io::Result<EndpointHttpRequest> {
+    // Aggregate-semantic deadline: `timeout_ms` bounds the total
+    // wall-clock for the endpoint call (all attempts + retry
+    // sleeps), not each attempt individually. Previously each
+    // attempt got a fresh `timeout_ms` budget, so a configuration
+    // like `timeout_ms=30000, max_attempts=3` could spend ~90 s
+    // before returning. The JS-side endpoint-call shape — "call
+    // this endpoint and tell me within Tms whether it worked" —
+    // matches the aggregate model; script authors aren't reasoning
+    // about retry topology.
+    let deadline: Option<Instant> =
+        timeout_ms.and_then(|ms| Instant::now().checked_add(Duration::from_millis(ms)));
+    // Returns `None` if there is no deadline (open-ended), or
+    // `Some(remaining)` clamped to zero on overrun. Used both
+    // for the per-attempt `timeout_ms` field and for bounding
+    // retry sleeps.
+    let remaining = |d: Option<Instant>| -> Option<Duration> {
+        d.map(|d| {
+            d.checked_duration_since(Instant::now())
+                .unwrap_or(Duration::ZERO)
+        })
+    };
+    // Returns Some(0) if the deadline has already fired; that's
+    // the signal to terminate the retry loop with `TimedOut`.
+    let remaining_ms = |d: Option<Instant>| -> Option<u64> {
+        remaining(d).map(|r| u64::try_from(r.as_millis()).unwrap_or(u64::MAX))
+    };
+    let build_request = |attempt_timeout_ms: Option<u64>| -> std::io::Result<EndpointHttpRequest> {
         let body = if supports_body {
             match (&request_body_type, &options.body) {
                 (_, EndpointCallBody::Absent) => EndpointHttpRequestBody::Absent,
@@ -126,7 +153,7 @@ pub(crate) async fn execute_endpoint(
             method,
             url: url.as_str().to_owned(),
             headers: EndpointHttpHeaders::from_http_map(&headers),
-            timeout_ms,
+            timeout_ms: attempt_timeout_ms,
             response_max_bytes,
             body,
         })
@@ -136,7 +163,23 @@ pub(crate) async fn execute_endpoint(
     let max_attempts = retry_policy.max_attempts;
     let mut final_response = None;
     for attempt in 1..=max_attempts {
-        let req = build_request()?;
+        // Aggregate-semantic gate: if the deadline has already
+        // fired before this attempt starts, terminate with
+        // `TimedOut` — making another attempt with `timeout_ms=0`
+        // would just produce the same error after a no-op send.
+        let attempt_timeout_ms = match remaining_ms(deadline) {
+            Some(0) => {
+                return Err(Error::new(
+                    ErrorKind::TimedOut,
+                    format!(
+                        "endpoint call timed out across {} attempt(s)",
+                        attempt.saturating_sub(1)
+                    ),
+                ));
+            }
+            other => other,
+        };
+        let req = build_request(attempt_timeout_ms)?;
         match client.execute(req).await {
             Ok(res) => {
                 let status_code = res.status;
@@ -146,8 +189,19 @@ pub(crate) async fn execute_endpoint(
                     let retry_after = res.headers.values("retry-after").next();
                     let delay =
                         retry_policy.retry_delay_for_status(status_code, retry_after, attempt);
+                    // Bound the retry sleep by the remaining
+                    // deadline. If the sleep would exceed the
+                    // budget, sleep only the remainder; the
+                    // attempt_timeout_ms guard at the next
+                    // iteration will terminate.
                     if !delay.is_zero() {
-                        tokio::time::sleep(delay).await;
+                        let bounded = match remaining(deadline) {
+                            Some(r) => delay.min(r),
+                            None => delay,
+                        };
+                        if !bounded.is_zero() {
+                            tokio::time::sleep(bounded).await;
+                        }
                     }
                     continue;
                 }
@@ -158,7 +212,13 @@ pub(crate) async fn execute_endpoint(
                 if attempt < max_attempts && err.is_retryable_per(retry_policy) {
                     let delay = retry_policy.retry_delay_for_transport(attempt);
                     if !delay.is_zero() {
-                        tokio::time::sleep(delay).await;
+                        let bounded = match remaining(deadline) {
+                            Some(r) => delay.min(r),
+                            None => delay,
+                        };
+                        if !bounded.is_zero() {
+                            tokio::time::sleep(bounded).await;
+                        }
                     }
                     continue;
                 }
