@@ -3,7 +3,7 @@ use crate::endpoint::http_client::{
     EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
     EndpointHttpResponse, EndpointTransportResult,
 };
-use crate::internal::runtime::RuntimeInternal;
+use crate::internal::runtime::{RunSourceOutcome, RuntimeInternal};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -443,11 +443,14 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
             mock_endpoint_config(),
             Value::Null,
         );
-        runtime
-            .run_source_with_early_reply(job, job_id, |result| {
-                reply_tx.send(result).expect("send early reply");
-            })
-            .expect("tail poll should finish after release");
+        match runtime.run_source_with_early_reply(job, job_id, |result| {
+            reply_tx.send(result).expect("send early reply");
+        }) {
+            RunSourceOutcome::MainReplied => {}
+            RunSourceOutcome::MainNotReplied(err) => {
+                panic!("tail poll should finish after release: {err:?}")
+            }
+        }
         tail_done_tx.send(()).expect("send tail completion");
     });
 
@@ -531,13 +534,16 @@ fn d17_deadline_mid_tail_poll_replies_then_warns_once() {
             Value::Null,
         );
         let started = Instant::now();
-        runtime
-            .run_source_with_early_reply(job, job_id, |result| {
-                reply_tx
-                    .send((started.elapsed(), result))
-                    .expect("send early reply");
-            })
-            .expect("tail deadline abort is handled after early reply");
+        match runtime.run_source_with_early_reply(job, job_id, |result| {
+            reply_tx
+                .send((started.elapsed(), result))
+                .expect("send early reply");
+        }) {
+            RunSourceOutcome::MainReplied => {}
+            RunSourceOutcome::MainNotReplied(err) => {
+                panic!("tail deadline abort is handled after early reply: {err:?}")
+            }
+        }
         started.elapsed()
     });
 
@@ -588,11 +594,14 @@ fn d17_unhandled_rejection_during_tail_poll_does_not_fail_response() {
     );
 
     let mut response = None;
-    runtime
-        .run_source_with_early_reply(job, job_id, |result| {
-            response = Some(result);
-        })
-        .expect("tail rejection should not fail run_source after main reply");
+    match runtime.run_source_with_early_reply(job, job_id, |result| {
+        response = Some(result);
+    }) {
+        RunSourceOutcome::MainReplied => {}
+        RunSourceOutcome::MainNotReplied(err) => {
+            panic!("tail rejection should not fail run_source after main reply: {err:?}")
+        }
+    }
 
     assert_eq!(
         response

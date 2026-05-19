@@ -1,6 +1,8 @@
 use crate::internal::{
-    error::MechanicsError, http::EndpointHttpClient, job::MechanicsExecutionLimits,
-    runtime::RuntimeInternal,
+    error::MechanicsError,
+    http::EndpointHttpClient,
+    job::MechanicsExecutionLimits,
+    runtime::{RunSourceOutcome, RuntimeInternal},
 };
 use crossbeam_channel::{Receiver, Sender, bounded, select};
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -227,35 +229,37 @@ impl MechanicsPoolShared {
                                             worker_job_sequence.saturating_add(1);
                                         let job_id =
                                             format!("worker-{worker_id}-job-{worker_job_sequence}");
-                                        let replied = Arc::new(AtomicBool::new(false));
-                                        let early_replied = Arc::clone(&replied);
+                                        // The `RunSourceOutcome` enum (§3.2) makes
+                                        // the reply-sending discrimination explicit:
+                                        // `MainReplied` ⇒ the runtime already sent
+                                        // the main result through `early_reply`;
+                                        // `MainNotReplied(err)` ⇒ the worker is
+                                        // responsible for sending. The previous
+                                        // `Arc<AtomicBool>` guard is gone — the
+                                        // discrimination is now decidable from the
+                                        // function return type.
                                         let early_reply = {
                                             let reply = reply.clone();
                                             move |result| {
-                                                early_replied.store(true, Ordering::Release);
                                                 let _ = reply.send(result);
                                             }
                                         };
-                                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                             runtime.run_source_with_early_reply(
                                                 job,
                                                 &job_id,
                                                 early_reply,
                                             )
                                         }));
-                                        match result {
-                                            Ok(Ok(())) => {}
-                                            Ok(Err(err)) => {
-                                                if !replied.swap(true, Ordering::AcqRel) {
-                                                    let _ = reply.send(Err(err));
-                                                }
+                                        match outcome {
+                                            Ok(RunSourceOutcome::MainReplied) => {}
+                                            Ok(RunSourceOutcome::MainNotReplied(err)) => {
+                                                let _ = reply.send(Err(err));
                                             }
                                             Err(_) => {
-                                                if !replied.swap(true, Ordering::AcqRel) {
-                                                    let _ = reply.send(Err(MechanicsError::worker_panic(
-                                                        "worker panicked while running job",
-                                                    )));
-                                                }
+                                                let _ = reply.send(Err(MechanicsError::worker_panic(
+                                                    "worker panicked while running job",
+                                                )));
                                                 break;
                                             }
                                         }

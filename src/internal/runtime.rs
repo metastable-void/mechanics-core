@@ -18,6 +18,34 @@ use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc};
 mod buffer_like;
 mod builtins;
 
+/// Result of [`RuntimeInternal::run_source_with_early_reply`].
+///
+/// State-machine framing: a script run has two outcomes the caller
+/// cares about — was the *main reply* delivered (via the
+/// `early_reply` closure), and how did the *tail polling* finish.
+/// Pre-§3.2 the function returned `Result<(), MechanicsError>` and
+/// the caller had to reconstruct which case applied (`Ok(())` ⇒
+/// main was replied; `Err(_)` ⇒ main was *probably* not replied,
+/// with the closure invocation tracked out-of-band via an
+/// `AtomicBool`). The enum encodes the discrimination directly so
+/// the worker can dispatch without an auxiliary atomic.
+#[derive(Debug)]
+pub(crate) enum RunSourceOutcome {
+    /// `early_reply` was invoked with the main result. Tail
+    /// polling completed (cleanly or hit the deadline); any
+    /// tail-side JS error that fired after main resolved was
+    /// logged at `warn` level and discarded for caller semantics
+    /// (main wins).
+    MainReplied,
+    /// `early_reply` was NOT invoked: the script never produced a
+    /// main result. The error describes why (module load failed,
+    /// default export missing or not a function, main path threw
+    /// before reaching the reply point, evaluation timed out
+    /// before main resolved, etc.). The caller is responsible for
+    /// forwarding this error on the reply channel.
+    MainNotReplied(MechanicsError),
+}
+
 #[derive(Default, Debug)]
 struct RuntimeHostHooks {
     pending_unhandled_rejections: Cell<usize>,
@@ -253,12 +281,21 @@ impl RuntimeInternal {
 
     /// Parses and evaluates a module, invokes its default export, sends the main outcome through
     /// `early_reply`, then continues polling tail jobs until quiescence or deadline.
+    ///
+    /// Returns [`RunSourceOutcome::MainReplied`] iff `early_reply`
+    /// was invoked at least once (the healthy path — main result
+    /// has reached the caller). Returns
+    /// [`RunSourceOutcome::MainNotReplied`] when the script never
+    /// produced a main result (module load failure, missing
+    /// default export, etc.) — the worker uses this signal to send
+    /// the error on the reply channel without relying on an
+    /// auxiliary atomic.
     pub(crate) fn run_source_with_early_reply<F>(
         &mut self,
         job: MechanicsJob,
         job_id: &str,
         early_reply: F,
-    ) -> Result<(), MechanicsError>
+    ) -> RunSourceOutcome
     where
         F: FnOnce(Result<Value, MechanicsError>),
     {
@@ -267,11 +304,16 @@ impl RuntimeInternal {
         let config_inner = Arc::unwrap_or_clone(config);
         let mut prepared_endpoints = HashMap::with_capacity(config_inner.endpoints().len());
         for (name, endpoint) in config_inner.endpoints() {
-            let prepared = endpoint
+            match endpoint
                 .prepare_runtime()
                 .map_err(JsError::from_rust)
-                .map_err(Self::js_error_to_execution)?;
-            prepared_endpoints.insert(name.clone(), prepared);
+                .map_err(Self::js_error_to_execution)
+            {
+                Ok(prepared) => {
+                    prepared_endpoints.insert(name.clone(), prepared);
+                }
+                Err(err) => return RunSourceOutcome::MainNotReplied(err),
+            }
         }
         let state = MechanicsState::new(
             Arc::new(config_inner.into()),
@@ -281,10 +323,18 @@ impl RuntimeInternal {
             prepared_endpoints,
         );
 
-        let deadline = Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)
-            .map_err(Self::js_error_to_execution)?;
+        let deadline =
+            match Self::compute_deadline(&self.ctx, self.execution_limits.max_execution_time)
+                .map_err(Self::js_error_to_execution)
+            {
+                Ok(d) => d,
+                Err(err) => return RunSourceOutcome::MainNotReplied(err),
+            };
         let ctx = &mut self.ctx;
-        let isolated_realm = ctx.create_realm().map_err(Self::js_error_to_execution)?;
+        let isolated_realm = match ctx.create_realm().map_err(Self::js_error_to_execution) {
+            Ok(r) => r,
+            Err(err) => return RunSourceOutcome::MainNotReplied(err),
+        };
         let previous_realm = ctx.enter_realm(isolated_realm);
         builtins::bundle_builtin_modules(&self.loader, ctx);
 
@@ -406,22 +456,33 @@ impl RuntimeInternal {
         #[cfg(test)]
         test_support::record_unhandled_rejection_count(job_id, pending_unhandled_rejections);
 
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) if main_replied => {
-                // Tail promise produced an error after the main
-                // result was already delivered to the caller. The
-                // reply behaviour does not change (main wins) but
-                // operators want to see misbehaving tail promises;
-                // previously the error was silently dropped.
+        match (result, main_replied) {
+            // Healthy: main reply delivered, tail polling clean (or
+            // hit the deadline, which is logged via
+            // `log_tail_poll_aborted` upstream).
+            (Ok(()), true) => RunSourceOutcome::MainReplied,
+            // Contract bug: function returned Ok(()) but
+            // `early_reply` was never invoked. Pre-§3.2 this would
+            // have caused a silent timeout on the pool side. Now
+            // we surface it explicitly.
+            (Ok(()), false) => RunSourceOutcome::MainNotReplied(MechanicsError::execution(
+                "run_source_with_early_reply returned without producing a main result",
+            )),
+            // Tail promise produced an error after main resolved.
+            // Reply behaviour does not change (main wins); log at
+            // warn so operators can see misbehaving tail promises.
+            (Err(e), true) => {
                 tracing::warn!(
                     job_id = job_id,
                     error = %e,
                     "tail promise produced an error after main resolved"
                 );
-                Ok(())
+                RunSourceOutcome::MainReplied
             }
-            Err(e) => Err(Self::js_error_to_execution(e)),
+            // Main path failed before reaching the reply point —
+            // module load failed, default export missing, main
+            // threw, etc. The caller forwards the error.
+            (Err(e), false) => RunSourceOutcome::MainNotReplied(Self::js_error_to_execution(e)),
         }
     }
 
@@ -430,17 +491,21 @@ impl RuntimeInternal {
     #[allow(dead_code)]
     pub(crate) fn run_source(&mut self, job: MechanicsJob) -> Result<Value, MechanicsError> {
         let mut main_result = None;
-        let tail_result = self.run_source_with_early_reply(job, "direct", |result| {
+        let outcome = self.run_source_with_early_reply(job, "direct", |result| {
             main_result = Some(result);
         });
-        match main_result {
-            Some(result) => result,
-            None => match tail_result {
-                Ok(()) => Err(MechanicsError::execution(
-                    "script completed without producing a main result",
-                )),
-                Err(err) => Err(err),
-            },
+        match outcome {
+            // `MainReplied` ⇒ closure was invoked, so
+            // `main_result` is populated. The .unwrap_or_else
+            // fallback covers an unreachable race (Boa cannot
+            // invoke the closure without our scope seeing it),
+            // belt-and-suspenders.
+            RunSourceOutcome::MainReplied => main_result.unwrap_or_else(|| {
+                Err(MechanicsError::execution(
+                    "script reported main reply but no value was captured",
+                ))
+            }),
+            RunSourceOutcome::MainNotReplied(err) => Err(err),
         }
     }
 

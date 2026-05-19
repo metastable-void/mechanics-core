@@ -25,6 +25,15 @@ this crate adheres to
   `endpoint_transport_errors_include_endpoint_name`.
 
 ### Changed (breaking, pre-publish)
+- `RuntimeInternal::run_source_with_early_reply` now returns the
+  typed enum `RunSourceOutcome` (`MainReplied` |
+  `MainNotReplied(MechanicsError)`) instead of `Result<(),
+  MechanicsError>`. The enum makes explicit whether the
+  `early_reply` closure was invoked — the worker side no longer
+  needs an `Arc<AtomicBool>` to track in-band whether to send the
+  error on the reply channel. Healthy paths and contract-bug
+  paths are now distinguishable at the type level. Affects only
+  internal `pub(crate)` API; not exposed to crate consumers.
 - `EndpointHttpClient::execute` now returns
   `EndpointTransportResult<EndpointHttpResponse>` (alias for
   `Result<_, EndpointTransportError>`) instead of
