@@ -1,7 +1,7 @@
 use super::*;
 use crate::endpoint::http_client::{
     EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest, EndpointHttpRequestBody,
-    EndpointHttpResponse,
+    EndpointHttpResponse, EndpointTransportResult,
 };
 use crate::internal::runtime::RuntimeInternal;
 use std::future::Future;
@@ -246,7 +246,7 @@ impl EndpointHttpClient for ImmediateEndpointHttpClient {
     fn execute(
         &self,
         _request: EndpointHttpRequest,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
         let call_count = Arc::clone(&self.call_count);
         Box::pin(async move {
             call_count.fetch_add(1, Ordering::Relaxed);
@@ -279,7 +279,7 @@ impl EndpointHttpClient for BlockingEndpointHttpClient {
     fn execute(
         &self,
         _request: EndpointHttpRequest,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
         let call_count = Arc::clone(&self.call_count);
         let gate = Arc::clone(&self.gate);
         Box::pin(async move {
@@ -313,7 +313,7 @@ impl EndpointHttpClient for HangingEndpointHttpClient {
     fn execute(
         &self,
         _request: EndpointHttpRequest,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
         Box::pin(std::future::pending())
     }
 }
@@ -332,13 +332,8 @@ impl EndpointHttpClient for TimedOutEndpointHttpClient {
     fn execute(
         &self,
         _request: EndpointHttpRequest,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
-        Box::pin(async move {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "request timed out",
-            ))
-        })
+    ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
+        Box::pin(async move { Err(crate::endpoint::http_client::EndpointTransportError::Timeout) })
     }
 }
 
@@ -685,25 +680,23 @@ impl EndpointHttpClient for MockEndpointHttpClient {
     fn execute(
         &self,
         request: EndpointHttpRequest,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
         self.call_count.fetch_add(1, Ordering::Relaxed);
         Box::pin(async move {
+            use crate::endpoint::http_client::EndpointTransportError;
             if request.method.as_str() != "GET" {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "expected GET method in mock client",
+                return Err(EndpointTransportError::InvalidRequest(
+                    "expected GET method in mock client".to_owned(),
                 ));
             }
             if request.url != "https://mock.local/ping" {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "unexpected URL in mock client",
+                return Err(EndpointTransportError::InvalidRequest(
+                    "unexpected URL in mock client".to_owned(),
                 ));
             }
             if !matches!(request.body, EndpointHttpRequestBody::Absent) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "mock client expected no request body",
+                return Err(EndpointTransportError::InvalidRequest(
+                    "mock client expected no request body".to_owned(),
                 ));
             }
             let mut headers = EndpointHttpHeaders::new();
@@ -761,7 +754,7 @@ impl EndpointHttpClient for RecordingEndpointHttpClient {
     fn execute(
         &self,
         request: EndpointHttpRequest,
-    ) -> Pin<Box<dyn Future<Output = std::io::Result<EndpointHttpResponse>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
         let seen_urls = Arc::clone(&self.seen_urls);
         Box::pin(async move {
             seen_urls

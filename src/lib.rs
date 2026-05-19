@@ -37,6 +37,7 @@ pub mod endpoint {
         pub use crate::internal::http::{
             DefaultEndpointHttpClient, EndpointHttpClient, EndpointHttpHeaders,
             EndpointHttpRequest, EndpointHttpRequestBody, EndpointHttpResponse,
+            EndpointTransportError, EndpointTransportResult,
         };
     }
 }

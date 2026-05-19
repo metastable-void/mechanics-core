@@ -11,7 +11,7 @@ pub use mechanics_config::{
 };
 pub use transport::{
     DefaultEndpointHttpClient, EndpointHttpClient, EndpointHttpHeaders, EndpointHttpRequest,
-    EndpointHttpRequestBody, EndpointHttpResponse,
+    EndpointHttpRequestBody, EndpointHttpResponse, EndpointTransportError, EndpointTransportResult,
 };
 
 pub(crate) use endpoint::execute_endpoint;

@@ -24,7 +24,34 @@ this crate adheres to
   behaviour change. Covered by
   `endpoint_transport_errors_include_endpoint_name`.
 
+### Changed (breaking, pre-publish)
+- `EndpointHttpClient::execute` now returns
+  `EndpointTransportResult<EndpointHttpResponse>` (alias for
+  `Result<_, EndpointTransportError>`) instead of
+  `std::io::Result<EndpointHttpResponse>`. The new typed error
+  enum encodes the retryability class at the type level
+  (`Network` and `Timeout` are retryable per
+  `EndpointRetryPolicy`; `BodyTooLarge`, `InvalidRequest`,
+  `Decode`, `Other` are terminal). Downstream impls of the trait
+  must migrate; the in-tree `DefaultEndpointHttpClient` and test
+  doubles are updated. Surfaces re-export
+  `EndpointTransportError` / `EndpointTransportResult` through
+  `crate::endpoint::http_client`.
+
 ### Fixed
+- The endpoint retry loop no longer retries deterministic local
+  conditions (body-cap violations, invalid-request shapes,
+  decode failures) as if they were transient I/O errors.
+  Previously every `Err(io::Error)` from
+  `EndpointHttpClient::execute` was fed into
+  `EndpointRetryPolicy::should_retry_transport_error`, whose
+  `ErrorKind`-based discriminator could not tell apart a
+  TCP-level corruption from an operator cap violation —
+  body-cap responses retried `max_attempts` times against the
+  same upstream, burning budget for no possible recovery.
+  The new typed error makes the contract auditable from the
+  type itself; covered by
+  `mechanics-core/src/internal/http/transport.rs#retry_classification_tests`.
 - `run_source_with_early_reply` no longer silently drops tail-side
   errors when the main result has already been delivered. A
   `Promise.resolve().then(() => { throw 'x' })` that fires after

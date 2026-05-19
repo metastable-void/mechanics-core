@@ -155,14 +155,14 @@ pub(crate) async fn execute_endpoint(
                 break;
             }
             Err(err) => {
-                if attempt < max_attempts && retry_policy.should_retry_transport_error(&err) {
+                if attempt < max_attempts && err.is_retryable_per(retry_policy) {
                     let delay = retry_policy.retry_delay_for_transport(attempt);
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
                     }
                     continue;
                 }
-                return Err(err);
+                return Err(err.into_io_error());
             }
         }
     }
