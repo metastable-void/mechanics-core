@@ -355,7 +355,13 @@ impl EndpointHttpClient for DefaultEndpointHttpClient {
         request: EndpointHttpRequest,
     ) -> Pin<Box<dyn Future<Output = EndpointTransportResult<EndpointHttpResponse>> + Send>> {
         let client = self.client.clone();
+        let url_for_trace = request.url.clone();
         Box::pin(async move {
+            tracing::debug!(
+                target: "mechanics::endpoint",
+                url = %url_for_trace,
+                "DefaultEndpointHttpClient::execute fresh_transport",
+            );
             // Fresh transport build is local TLS-config plumbing; failure
             // here is not a network condition — retrying rebuilds the
             // same config and fails the same way.
@@ -386,6 +392,11 @@ impl EndpointHttpClient for DefaultEndpointHttpClient {
                 }
             }
 
+            tracing::debug!(
+                target: "mechanics::endpoint",
+                url = %url_for_trace,
+                "DefaultEndpointHttpClient::execute send",
+            );
             let res: HttpResponse = req.send().await.map_err(classify_mhc_error)?;
             let status = res.status().as_u16();
             let content_length = res.content_length();

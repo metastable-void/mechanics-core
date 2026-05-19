@@ -163,6 +163,13 @@ pub(crate) async fn execute_endpoint(
     let max_attempts = retry_policy.max_attempts;
     let mut final_response = None;
     for attempt in 1..=max_attempts {
+        tracing::debug!(
+            target: "mechanics::endpoint",
+            url = url.as_str(),
+            attempt = attempt,
+            max_attempts = max_attempts,
+            "execute_endpoint attempt start",
+        );
         // Aggregate-semantic gate: if the deadline has already
         // fired before this attempt starts, terminate with
         // `TimedOut` — making another attempt with `timeout_ms=0`

@@ -24,6 +24,17 @@ this crate adheres to
   behaviour change. Covered by
   `endpoint_transport_errors_include_endpoint_name`.
 
+### Added (observability)
+- Structured `tracing` debug events at three endpoint-call
+  transition points (`mechanics::endpoint` target): JS entry
+  in `runtime/builtins/endpoint.rs` (logs the endpoint name),
+  `execute_endpoint` attempt start (logs URL + attempt number
+  + max_attempts), and `DefaultEndpointHttpClient::execute`
+  pre-fresh-transport + pre-send (logs URL). Combined with
+  the mhc-side trace points (`mhc::http3`, `mhc::tcp`,
+  `mhc::dns`), production logs can now correlate a JS
+  endpoint call to its observed network state per attempt.
+
 ### Changed (breaking, pre-publish)
 - `RuntimeInternal::run_source_with_early_reply` now returns the
   typed enum `RunSourceOutcome` (`MainReplied` |

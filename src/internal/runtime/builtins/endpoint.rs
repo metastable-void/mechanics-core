@@ -34,6 +34,11 @@ pub(super) fn register(loader: &Rc<CustomModuleLoader>, context: &mut Context) {
                 JsError::from_native(JsNativeError::typ().with_message("Endpoint not found")),
             )?;
 
+            tracing::debug!(
+                target: "mechanics::endpoint",
+                endpoint = %endpoint_name,
+                "endpoint call entry",
+            );
             let res = execute_endpoint(
                 endpoint,
                 state.endpoint_http_client(),
