@@ -48,6 +48,18 @@ this crate adheres to
   `crate::endpoint::http_client`.
 
 ### Fixed
+- `MechanicsPool::new` no longer leaks already-spawned workers
+  when a later step fails mid-construction. Previously a worker
+  spawn failure (e.g. `force_worker_runtime_init_failure=true`
+  on worker N>1) returned `Err` from `?`-propagation with the
+  earlier workers still alive — `MechanicsPool::drop` could
+  not run because no `MechanicsPool` ever existed. A new
+  `PoolConstructor` RAII guard owns the cleanup contract:
+  it mirrors `MechanicsPool::drop` (mark closed, drain
+  pending jobs, request worker shutdown, join supervisor,
+  join worker handles) and runs on partial-construction
+  failure. The success path commits the guard (no-op Drop),
+  transferring ownership to the new `MechanicsPool`.
 - `Queue::enqueue_job` no longer silently drops a `TimeoutJob`
   whose delay overflows `JsInstant`. Previously the overflow
   clamped to the `u64::MAX` sentinel and inserted the job at

@@ -18,6 +18,7 @@ use std::{
 
 use super::{
     config::MechanicsPoolConfig,
+    constructor::PoolConstructor,
     shared::MechanicsPoolShared,
     worker::{PoolJob, PoolMessage},
 };
@@ -138,6 +139,13 @@ impl MechanicsPool {
             exit_rx,
         ));
 
+        // §4.4: cover partial construction with an RAII guard.
+        // From this point on, any `?` early return tears down
+        // already-spawned workers (and the supervisor once
+        // attached) via `PoolConstructor::drop`. The guard is
+        // released on the success path via `commit` below.
+        let mut ctor = PoolConstructor::new(Arc::clone(&shared));
+
         for _ in 0..config.worker_count() {
             MechanicsPoolShared::spawn_worker(&shared)?;
         }
@@ -180,12 +188,19 @@ impl MechanicsPool {
                 MechanicsError::runtime_pool(format!("failed to spawn supervisor thread: {e}"))
             })?;
 
+        // Hand the supervisor to the guard so a future failure
+        // between here and `commit` would still tear it down.
+        // (Today there are no such fallible steps; the explicit
+        // attach is forward-compatible.)
+        ctor.attach_supervisor(supervisor, supervisor_shutdown_tx);
+        let (shared, supervisor, supervisor_shutdown_tx) = ctor.commit();
+
         Ok(Self {
             shared,
             enqueue_timeout: config.enqueue_timeout(),
             run_timeout: config.run_timeout(),
-            supervisor: Some(supervisor),
-            supervisor_shutdown_tx: Some(supervisor_shutdown_tx),
+            supervisor,
+            supervisor_shutdown_tx,
         })
     }
 
