@@ -25,6 +25,13 @@ this crate adheres to
   `endpoint_transport_errors_include_endpoint_name`.
 
 ### Fixed
+- `run_source_with_early_reply` no longer silently drops tail-side
+  errors when the main result has already been delivered. A
+  `Promise.resolve().then(() => { throw 'x' })` that fires after
+  the main reply now emits a structured
+  `tail promise produced an error after main resolved` warn log
+  carrying the job ID and the JS error; the caller-side reply
+  behaviour is unchanged (main result still wins).
 - The default `EndpointHttpClient` now gives every
   `mechanics:endpoint` execution a fresh TCP/TLS hyper transport
   while preserving the shared `mechanics-http-client` HTTP/3

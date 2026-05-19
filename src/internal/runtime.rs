@@ -409,7 +409,16 @@ impl RuntimeInternal {
         match result {
             Ok(()) => Ok(()),
             Err(e) if main_replied => {
-                let _ = e;
+                // Tail promise produced an error after the main
+                // result was already delivered to the caller. The
+                // reply behaviour does not change (main wins) but
+                // operators want to see misbehaving tail promises;
+                // previously the error was silently dropped.
+                tracing::warn!(
+                    job_id = job_id,
+                    error = %e,
+                    "tail promise produced an error after main resolved"
+                );
                 Ok(())
             }
             Err(e) => Err(Self::js_error_to_execution(e)),
