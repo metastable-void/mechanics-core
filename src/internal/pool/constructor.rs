@@ -26,9 +26,9 @@
 
 use std::{sync::Arc, thread::JoinHandle};
 
-use crossbeam_channel::{Sender, TryRecvError};
+use crossbeam_channel::Sender;
 
-use super::{shared::MechanicsPoolShared, worker::PoolMessage};
+use super::{metrics as pool_metrics, shared::MechanicsPoolShared, worker::PoolMessage};
 use crate::internal::error::MechanicsError;
 
 pub(super) struct PoolConstructor {
@@ -93,15 +93,11 @@ impl Drop for PoolConstructor {
         // and workers to exit; join.
         self.shared.mark_closed();
 
-        loop {
-            match self.shared.job_receiver().try_recv() {
-                Ok(PoolMessage::Run(job)) => {
-                    job.send_result(Err(MechanicsError::canceled(
-                        "pool construction failed before job execution",
-                    )));
-                }
-                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
-            }
+        while let Ok(PoolMessage::Run(job)) = self.shared.job_receiver().try_recv() {
+            job.send_result(Err(MechanicsError::canceled(
+                "pool construction failed before job execution",
+            )));
+            pool_metrics::record_queue_depth(self.shared.queue_depth());
         }
 
         {
@@ -122,5 +118,6 @@ impl Drop for PoolConstructor {
         for (_, handle) in workers.drain() {
             handle.join();
         }
+        pool_metrics::record_pool_workers_total(0);
     }
 }

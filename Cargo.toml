@@ -42,6 +42,7 @@ htmlize = { version = "1.1.0", default-features = false, features = ["unescape"]
 http = { version = "1", default-features = false, features = ["std"] }
 mechanics-config = "0.1.0"
 mechanics-http-client = { version = "0.2", default-features = false, features = ["http3"] } # kept: preserves opportunistic HTTP/3 endpoint transport
+metrics = { version = "0.24.6", default-features = false }
 parking_lot = { version = "0.12.5", default-features = false, features = [] }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
@@ -49,6 +50,9 @@ tokio = { version = "1", default-features = false, features = ["rt", "time"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 url = { version = "2.5.7", default-features = false, features = ["std"] }
 uuid = { version = "1.18.1", default-features = false, features = ["std", "v3", "v4", "v5", "v6", "v7"] }
+
+[dev-dependencies]
+metrics-util = { version = "0.20.4", default-features = false, features = ["debugging"] }
 
 [profile.release]
 opt-level = 3

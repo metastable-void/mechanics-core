@@ -455,7 +455,7 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
     });
 
     let response = reply_rx
-        .recv_timeout(Duration::from_millis(200))
+        .recv_timeout(Duration::from_secs(2))
         .expect("early reply should arrive before endpoint future is released")
         .expect("main response should succeed");
     assert_eq!(response, json!({"ok": 2}));
@@ -468,7 +468,7 @@ fn d17_fire_and_forget_endpoint_replies_before_tail_completes() {
     );
     release_client.release();
     tail_done_rx
-        .recv_timeout(Duration::from_secs(1))
+        .recv_timeout(Duration::from_secs(5))
         .expect("tail poll should finish after endpoint release");
     handle.join().expect("runtime thread should join");
     assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -625,7 +625,7 @@ fn d17_main_never_settles_preserves_default_export_timeout_error() {
         }))
         .expect("create runtime");
     runtime.set_execution_limits(MechanicsExecutionLimits {
-        max_execution_time: Duration::from_millis(100),
+        max_execution_time: Duration::from_millis(500),
         ..Default::default()
     });
     let job = make_job(

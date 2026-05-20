@@ -1,22 +1,16 @@
 use crate::internal::error::MechanicsError;
-use crossbeam_channel::TryRecvError;
 
-use super::{api::MechanicsPool, worker::PoolMessage};
+use super::{api::MechanicsPool, metrics as pool_metrics, worker::PoolMessage};
 
 impl Drop for MechanicsPool {
     fn drop(&mut self) {
         self.shared.mark_closed();
 
-        loop {
-            match self.shared.job_receiver().try_recv() {
-                Ok(PoolMessage::Run(job)) => {
-                    job.send_result(Err(MechanicsError::canceled(
-                        "pool dropped before job execution",
-                    )));
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => break,
-            }
+        while let Ok(PoolMessage::Run(job)) = self.shared.job_receiver().try_recv() {
+            job.send_result(Err(MechanicsError::canceled(
+                "pool dropped before job execution",
+            )));
+            pool_metrics::record_queue_depth(self.shared.queue_depth());
         }
 
         {
@@ -38,5 +32,6 @@ impl Drop for MechanicsPool {
         for (_, handle) in workers.drain() {
             handle.join();
         }
+        pool_metrics::record_pool_workers_total(0);
     }
 }

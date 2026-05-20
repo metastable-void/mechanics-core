@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod constructor;
 mod drop_impl;
+mod metrics;
 mod restart_guard;
 mod shared;
 mod worker;

@@ -370,12 +370,12 @@ fn reconcile_workers_recovers_after_restart_window_without_new_exit_events() {
 
     assert!(shared.record_restart_attempt(Instant::now()));
 
-    MechanicsPoolShared::reconcile_workers(&shared);
+    MechanicsPoolShared::reconcile_workers(&shared, "other");
     assert_eq!(shared.live_workers(), 0);
     assert!(shared.is_restart_blocked());
 
     thread::sleep(Duration::from_millis(30));
-    MechanicsPoolShared::reconcile_workers(&shared);
+    MechanicsPoolShared::reconcile_workers(&shared, "other");
     assert_eq!(shared.live_workers(), 1);
     assert!(!shared.is_restart_blocked());
 

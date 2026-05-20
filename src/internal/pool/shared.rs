@@ -18,6 +18,7 @@ use std::{
 
 use super::{
     config::MechanicsPoolConfig,
+    metrics as pool_metrics,
     restart_guard::RestartGuard,
     worker::{PoolMessage, WorkerExit, WorkerHandle},
 };
@@ -34,6 +35,7 @@ pub(crate) struct MechanicsPoolShared {
     closed: AtomicBool,
     restart_blocked: AtomicBool,
     restart_guard: Mutex<RestartGuard>,
+    busy_workers: Arc<AtomicUsize>,
     execution_limits: MechanicsExecutionLimits,
     default_http_timeout_ms: Option<u64>,
     default_http_response_max_bytes: Option<usize>,
@@ -51,6 +53,8 @@ impl MechanicsPoolShared {
         exit_tx: Sender<WorkerExit>,
         exit_rx: Receiver<WorkerExit>,
     ) -> Self {
+        pool_metrics::register_metrics();
+
         Self {
             tx,
             rx,
@@ -65,6 +69,7 @@ impl MechanicsPoolShared {
                 config.restart_window(),
                 config.max_restarts_in_window(),
             )),
+            busy_workers: Arc::new(AtomicUsize::new(0)),
             execution_limits: config.execution_limits(),
             default_http_timeout_ms: config.default_http_timeout_ms(),
             default_http_response_max_bytes: config.default_http_response_max_bytes(),
@@ -137,7 +142,9 @@ impl MechanicsPoolShared {
 
     fn remove_worker_handle(&self, worker_id: usize) -> Option<WorkerHandle> {
         let mut workers = self.workers_write();
-        workers.remove(&worker_id)
+        let handle = workers.remove(&worker_id);
+        pool_metrics::record_pool_workers_total(workers.len());
+        handle
     }
 
     fn reap_finished_workers(&self) {
@@ -160,6 +167,7 @@ impl MechanicsPoolShared {
                     finished_handles.push(handle);
                 }
             }
+            pool_metrics::record_pool_workers_total(workers.len());
         }
         for handle in finished_handles {
             handle.join();
@@ -177,12 +185,14 @@ impl MechanicsPoolShared {
         let execution_limits = shared.execution_limits;
         let default_http_timeout_ms = shared.default_http_timeout_ms;
         let default_http_response_max_bytes = shared.default_http_response_max_bytes;
+        let busy_workers = Arc::clone(&shared.busy_workers);
         #[cfg(test)]
         let force_runtime_init_failure = shared.force_worker_runtime_init_failure;
 
         let handle = thread::Builder::new()
             .name(format!("mechanics-worker-{worker_id}"))
             .spawn(move || {
+                let mut restart_reason = "other";
                 // catch_unwind is diagnostic / defense-in-depth for
                 // unwinding (test / debug) builds. Production builds
                 // compile with `panic = "abort"`, where catch_unwind
@@ -191,7 +201,7 @@ impl MechanicsPoolShared {
                 // properties (worker isolation, restart-on-failure)
                 // are enforced by the supervisor on top of the
                 // thread, not by this catch. See CONTRIBUTING.md
-                // §10.13.
+                // §10.16.
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     #[cfg(test)]
                     if force_runtime_init_failure {
@@ -226,6 +236,7 @@ impl MechanicsPoolShared {
                             recv(rx) -> msg => {
                                 match msg {
                                     Ok(PoolMessage::Run(pool_job)) => {
+                                        pool_metrics::record_queue_depth(rx.len());
                                         if pool_job.is_canceled() {
                                             pool_job.send_result(Err(MechanicsError::canceled(
                                                 "job timed out before execution",
@@ -234,6 +245,10 @@ impl MechanicsPoolShared {
                                         }
                                         let reply = pool_job.reply_sender();
                                         let job = pool_job.into_job();
+                                        let _busy_guard =
+                                            pool_metrics::WorkerBusyGuard::start(Arc::clone(
+                                                &busy_workers,
+                                            ));
                                         worker_job_sequence =
                                             worker_job_sequence.saturating_add(1);
                                         let job_id =
@@ -274,6 +289,7 @@ impl MechanicsPoolShared {
                                                 let _ = reply.send(Err(err));
                                             }
                                             Err(_) => {
+                                                restart_reason = "panic";
                                                 let _ = reply.send(Err(MechanicsError::worker_panic(
                                                     "worker panicked while running job",
                                                 )));
@@ -290,11 +306,11 @@ impl MechanicsPoolShared {
 
                 if run.is_err() {
                     let _ = ready_tx.send(Err(MechanicsError::worker_panic("worker panicked during startup")));
-                    let _ = exit_tx.send(WorkerExit::new(worker_id));
+                    let _ = exit_tx.send(WorkerExit::new(worker_id, "panic"));
                     return;
                 }
 
-                let _ = exit_tx.send(WorkerExit::new(worker_id));
+                let _ = exit_tx.send(WorkerExit::new(worker_id, restart_reason));
             })
             .map_err(|e| {
                 MechanicsError::runtime_pool(format!("failed to spawn worker thread: {e}"))
@@ -303,6 +319,7 @@ impl MechanicsPoolShared {
         {
             let mut workers = shared.workers_write();
             workers.insert(worker_id, WorkerHandle::new(handle, shutdown_tx));
+            pool_metrics::record_pool_workers_total(workers.len());
         }
 
         match ready_rx.recv() {
@@ -332,7 +349,7 @@ impl MechanicsPoolShared {
         self.workers_read().len()
     }
 
-    pub(crate) fn reconcile_workers(shared: &Arc<Self>) {
+    pub(crate) fn reconcile_workers(shared: &Arc<Self>, restart_reason: &'static str) {
         if shared.is_closed() {
             return;
         }
@@ -352,9 +369,12 @@ impl MechanicsPoolShared {
                 return;
             }
 
-            if MechanicsPoolShared::spawn_worker(shared).is_err() {
-                shared.set_restart_blocked(true);
-                return;
+            match MechanicsPoolShared::spawn_worker(shared) {
+                Ok(_) => pool_metrics::record_worker_restart(restart_reason),
+                Err(_) => {
+                    shared.set_restart_blocked(true);
+                    return;
+                }
             }
         }
     }

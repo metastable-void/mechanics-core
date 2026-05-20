@@ -19,6 +19,7 @@ use std::{
 use super::{
     config::MechanicsPoolConfig,
     constructor::PoolConstructor,
+    metrics as pool_metrics,
     shared::MechanicsPoolShared,
     worker::{PoolJob, PoolMessage},
 };
@@ -157,6 +158,7 @@ impl MechanicsPool {
             .name("mechanics-supervisor".to_owned())
             .spawn(move || {
                 loop {
+                    let mut restart_reason = "other";
                     select! {
                         recv(supervisor_shutdown_rx) -> _ => {
                             break;
@@ -164,9 +166,12 @@ impl MechanicsPool {
                         recv(supervisor_shared.worker_exit_receiver()) -> event => {
                             match event {
                                 Ok(event) => {
+                                    restart_reason = event.restart_reason();
                                     let maybe_old = {
                                         let mut workers = supervisor_shared.workers_write();
-                                        workers.remove(&event.worker_id())
+                                        let handle = workers.remove(&event.worker_id());
+                                        pool_metrics::record_pool_workers_total(workers.len());
+                                        handle
                                     };
                                     if let Some(handle) = maybe_old {
                                         handle.join();
@@ -181,7 +186,7 @@ impl MechanicsPool {
                     if supervisor_shared.is_closed() {
                         break;
                     }
-                    MechanicsPoolShared::reconcile_workers(&supervisor_shared);
+                    MechanicsPoolShared::reconcile_workers(&supervisor_shared, restart_reason);
                 }
             })
             .map_err(|e| {
@@ -244,8 +249,12 @@ impl MechanicsPool {
         };
         let enqueue_wait = self.enqueue_timeout.min(remaining_for_enqueue);
         let limited_by_run_timeout = enqueue_wait == remaining_for_enqueue;
-        match self.shared.job_sender().send_timeout(message, enqueue_wait) {
-            Ok(()) => {}
+        let accepted_at = match self.shared.job_sender().send_timeout(message, enqueue_wait) {
+            Ok(()) => {
+                let accepted_at = Instant::now();
+                pool_metrics::record_job_accepted(self.shared.queue_depth());
+                accepted_at
+            }
             Err(SendTimeoutError::Timeout(PoolMessage::Run(pool_job))) => {
                 if limited_by_run_timeout {
                     pool_job.mark_canceled();
@@ -268,25 +277,37 @@ impl MechanicsPool {
                     "job queue disconnected from workers",
                 ));
             }
-        }
+        };
 
         let Some(remaining_for_reply) = Self::remaining_to_deadline(deadline) else {
             canceled.store(true, Ordering::Release);
+            pool_metrics::record_job_completed(accepted_at, pool_metrics::JobOutcome::Timeout);
             return Err(MechanicsError::run_timeout(
                 "run timeout elapsed while waiting for worker reply",
             ));
         };
         match reply_rx.recv_timeout(remaining_for_reply) {
-            Ok(result) => result,
+            Ok(result) => {
+                let outcome = match &result {
+                    Ok(_) => pool_metrics::JobOutcome::Ok,
+                    Err(error) => pool_metrics::JobOutcome::from_error(error),
+                };
+                pool_metrics::record_job_completed(accepted_at, outcome);
+                result
+            }
             Err(RecvTimeoutError::Timeout) => {
                 canceled.store(true, Ordering::Release);
+                pool_metrics::record_job_completed(accepted_at, pool_metrics::JobOutcome::Timeout);
                 Err(MechanicsError::run_timeout(
                     "run timeout elapsed while waiting for worker reply",
                 ))
             }
-            Err(_) => Err(MechanicsError::worker_unavailable(
-                "worker dropped reply channel",
-            )),
+            Err(_) => {
+                pool_metrics::record_job_completed(accepted_at, pool_metrics::JobOutcome::Failed);
+                Err(MechanicsError::worker_unavailable(
+                    "worker dropped reply channel",
+                ))
+            }
         }
     }
 
@@ -312,8 +333,12 @@ impl MechanicsPool {
         let canceled = Arc::new(AtomicBool::new(false));
         let message = PoolMessage::Run(PoolJob::new(job, reply_tx, Arc::clone(&canceled)));
 
-        match self.shared.job_sender().try_send(message) {
-            Ok(()) => {}
+        let accepted_at = match self.shared.job_sender().try_send(message) {
+            Ok(()) => {
+                let accepted_at = Instant::now();
+                pool_metrics::record_job_accepted(self.shared.queue_depth());
+                accepted_at
+            }
             Err(TrySendError::Full(PoolMessage::Run(_))) => {
                 return Err(MechanicsError::queue_full("queue is full"));
             }
@@ -322,25 +347,37 @@ impl MechanicsPool {
                     "job queue disconnected from workers",
                 ));
             }
-        }
+        };
 
         let Some(remaining_for_reply) = Self::remaining_to_deadline(deadline) else {
             canceled.store(true, Ordering::Release);
+            pool_metrics::record_job_completed(accepted_at, pool_metrics::JobOutcome::Timeout);
             return Err(MechanicsError::run_timeout(
                 "run timeout elapsed while waiting for worker reply",
             ));
         };
         match reply_rx.recv_timeout(remaining_for_reply) {
-            Ok(result) => result,
+            Ok(result) => {
+                let outcome = match &result {
+                    Ok(_) => pool_metrics::JobOutcome::Ok,
+                    Err(error) => pool_metrics::JobOutcome::from_error(error),
+                };
+                pool_metrics::record_job_completed(accepted_at, outcome);
+                result
+            }
             Err(RecvTimeoutError::Timeout) => {
                 canceled.store(true, Ordering::Release);
+                pool_metrics::record_job_completed(accepted_at, pool_metrics::JobOutcome::Timeout);
                 Err(MechanicsError::run_timeout(
                     "run timeout elapsed while waiting for worker reply",
                 ))
             }
-            Err(_) => Err(MechanicsError::worker_unavailable(
-                "worker dropped reply channel",
-            )),
+            Err(_) => {
+                pool_metrics::record_job_completed(accepted_at, pool_metrics::JobOutcome::Failed);
+                Err(MechanicsError::worker_unavailable(
+                    "worker dropped reply channel",
+                ))
+            }
         }
     }
 }

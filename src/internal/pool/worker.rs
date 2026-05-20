@@ -58,15 +58,23 @@ pub(crate) enum PoolMessage {
 #[derive(Debug)]
 pub(crate) struct WorkerExit {
     worker_id: usize,
+    restart_reason: &'static str,
 }
 
 impl WorkerExit {
-    pub(crate) fn new(worker_id: usize) -> Self {
-        Self { worker_id }
+    pub(crate) fn new(worker_id: usize, restart_reason: &'static str) -> Self {
+        Self {
+            worker_id,
+            restart_reason,
+        }
     }
 
     pub(crate) fn worker_id(&self) -> usize {
         self.worker_id
+    }
+
+    pub(crate) fn restart_reason(&self) -> &'static str {
+        self.restart_reason
     }
 }
 
