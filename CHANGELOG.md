@@ -10,6 +10,16 @@ this crate adheres to
 ## [Unreleased]
 
 ### Changed
+- `MechanicsExecutionLimits::default()` now sets
+  `max_execution_time` to 30 seconds (previously 10 seconds).
+  The 10-second default was too tight for any workflow that
+  calls an LLM — single LLM calls routinely exceed it — and
+  the workflow-authoring guide had been documenting the
+  intended 30-second value for some time, so the previous
+  value was an effective code/doc drift rather than a
+  deliberate setting. Embedders that need a different limit
+  still override via `MechanicsExecutionLimits::new(...)` or
+  the `with_execution_limits` builder on the runtime pool.
 - `mechanics:endpoint` now prefixes JS-visible transport
   errors with the endpoint name. Previously a job that called
   `await endpoint("llm", {...})` and timed out surfaced as

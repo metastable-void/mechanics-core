@@ -201,7 +201,7 @@ impl MechanicsExecutionLimits {
 impl Default for MechanicsExecutionLimits {
     fn default() -> Self {
         Self {
-            max_execution_time: Duration::from_secs(10),
+            max_execution_time: Duration::from_secs(30),
             max_loop_iterations: 1_000_000,
             max_recursion_depth: 512,
             max_stack_size: 10 * 1024,
