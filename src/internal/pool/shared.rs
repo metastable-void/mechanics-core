@@ -183,6 +183,15 @@ impl MechanicsPoolShared {
         let handle = thread::Builder::new()
             .name(format!("mechanics-worker-{worker_id}"))
             .spawn(move || {
+                // catch_unwind is diagnostic / defense-in-depth for
+                // unwinding (test / debug) builds. Production builds
+                // compile with `panic = "abort"`, where catch_unwind
+                // is a no-op — a panic aborts the worker process
+                // before the Ok/Err arms run. The pool's correctness
+                // properties (worker isolation, restart-on-failure)
+                // are enforced by the supervisor on top of the
+                // thread, not by this catch. See CONTRIBUTING.md
+                // §10.13.
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     #[cfg(test)]
                     if force_runtime_init_failure {
@@ -244,6 +253,14 @@ impl MechanicsPoolShared {
                                                 let _ = reply.send(result);
                                             }
                                         };
+                                        // catch_unwind is diagnostic / defense-in-depth
+                                        // for unwinding (test / debug) builds; production
+                                        // builds compile with `panic = "abort"` and a panic
+                                        // here will abort the worker before the catch
+                                        // returns. The pool correctness properties don't
+                                        // depend on this catch — they rely on the supervisor
+                                        // observing worker exit and restarting. See
+                                        // CONTRIBUTING.md §10.16.
                                         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                             runtime.run_source_with_early_reply(
                                                 job,
